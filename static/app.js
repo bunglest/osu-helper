@@ -33,6 +33,7 @@ async function bootstrap() {
     }
     showOAuthUserChip(meData);
     hideOAuthLogin();
+    populateSettings(meData);
   } else {
     hideOAuthLogin();
     if (!meData.has_credentials) {
@@ -454,6 +455,7 @@ function buildPlayCard(play, index) {
       ${length ? `<span class="stat-pill">${length}</span>` : ''}
       ${creator ? `<span class="stat-pill">by ${esc(creator)}</span>` : ''}
     </div>
+    ${renderTypeBadges(bm.map_types)}
   </div>
   <div class="play-footer">
     <span class="play-meta">${esc(version)} · ${date}</span>
@@ -573,6 +575,7 @@ function buildRecCard(rec) {
       ${bpmStr ? `<span class="attr-chip bpm">${bpmStr}</span>` : ''}
       ${length ? `<span class="attr-chip">${length}</span>` : ''}
     </div>
+    ${renderTypeBadges(bm.map_types)}
     ${rec.reason ? `<div class="rec-reason">💡 ${esc(rec.reason)}</div>` : ''}
   </div>
   <div class="rec-actions">
@@ -654,6 +657,15 @@ function toast(msg, type = 'info') {
   el.textContent = msg;
   document.getElementById('toast-container').appendChild(el);
   setTimeout(() => el.remove(), 3500);
+}
+
+// ─── Map type badges ─────────────────────────
+function renderTypeBadges(types) {
+  if (!types || !types.length) return '';
+  return `<div class="map-types">${types.map(t => {
+    const cls = 'type-' + t.replace(/\s+/g, '-');
+    return `<span class="type-badge ${cls}">${esc(t)}</span>`;
+  }).join('')}</div>`;
 }
 
 // ─── Helpers ────────────────────────────────

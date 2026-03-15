@@ -799,6 +799,23 @@ a:hover { color: var(--pink-light); text-decoration: underline; }
 .stars-6 { color: #ffaa00; }
 .stars-7 { color: #ff4400; }
 
+/* ── Map Type Badges ────────────────────── */
+.map-types { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 2px; }
+.type-badge {
+  font-size: 0.68rem; font-weight: 700;
+  padding: 2px 7px; border-radius: 4px;
+  letter-spacing: 0.03em; text-transform: uppercase;
+  border: 1px solid transparent; opacity: 0.9;
+}
+.type-streams        { background: rgba(255,85,85,0.15);   color: #ff5555; border-color: rgba(255,85,85,0.3); }
+.type-aim            { background: rgba(139,233,253,0.12); color: #8be9fd; border-color: rgba(139,233,253,0.25); }
+.type-tech           { background: rgba(189,147,249,0.15); color: #bd93f9; border-color: rgba(189,147,249,0.3); }
+.type-reading        { background: rgba(241,250,140,0.12); color: #f1fa8c; border-color: rgba(241,250,140,0.25); }
+.type-finger-control { background: rgba(255,184,108,0.15); color: #ffb86c; border-color: rgba(255,184,108,0.3); }
+.type-speed          { background: rgba(255,121,198,0.15); color: #ff79c6; border-color: rgba(255,121,198,0.3); }
+.type-farm           { background: rgba(80,250,123,0.12);  color: #50fa7b; border-color: rgba(80,250,123,0.25); }
+.type-misc           { background: rgba(136,136,153,0.12); color: #888899; border-color: rgba(136,136,153,0.2); }
+
 /* ── Profile Switcher ───────────────────── */
 .profile-switcher { position: relative; }
 

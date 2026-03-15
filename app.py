@@ -12,27 +12,41 @@ Environment variables (hosted / Railway):
 """
 
 from flask import Flask, render_template, jsonify, request, Response, session, redirect
+from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import json
 import time
 import threading
 import os
+import sys
 import statistics
 import uuid
 import secrets
+import numpy as np
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 # ─────────────────────────────────────────────
-# App setup
+# App setup — handle PyInstaller frozen mode
 # ─────────────────────────────────────────────
 
-app = Flask(__name__)
+if getattr(sys, "frozen", False):
+    # Running as a PyInstaller bundle
+    BASE_DIR = sys._MEIPASS
+    DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "osuhelper")
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = BASE_DIR
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+app = Flask(__name__,
+            template_folder=os.path.join(BASE_DIR, "templates"),
+            static_folder=os.path.join(BASE_DIR, "static"))
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
-BASE_DIR        = os.path.dirname(__file__)
-CONFIG_FILE     = os.path.join(BASE_DIR, "config.json")
-PROFILES_FILE   = os.path.join(BASE_DIR, "profiles.json")
+CONFIG_FILE     = os.path.join(DATA_DIR, "config.json")
+PROFILES_FILE   = os.path.join(DATA_DIR, "profiles.json")
 OSU_API_BASE    = "https://osu.ppy.sh/api/v2"
 OSU_TOKEN_URL   = "https://osu.ppy.sh/oauth/token"
 OSU_AUTH_URL    = "https://osu.ppy.sh/oauth/authorize"
@@ -40,6 +54,15 @@ NERINYAN_API    = "https://api.nerinyan.moe/search"
 
 # Detect mode
 OAUTH_MODE = os.environ.get("OAUTH_MODE", "").strip() in ("1", "true", "yes")
+
+# Fix for Railway/nginx HTTPS reverse proxy — ensures url_for() and redirects use https://
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+# Secure session cookies so the OAuth state cookie survives the osu! redirect
+app.config.update(
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=OAUTH_MODE,   # Secure flag only when actually on HTTPS
+    SESSION_COOKIE_HTTPONLY=True,
+)
 
 # ─────────────────────────────────────────────
 # Config (local mode)
@@ -249,82 +272,218 @@ def current_username():
 
 
 # ─────────────────────────────────────────────
-# Recommendation engine (unchanged)
+# Map type classifier
 # ─────────────────────────────────────────────
 
-def _score_similarity(bm, target):
-    diff = 0
-    diff += abs(bm.get("difficulty_rating", 0) - target["sr"]) * 3.0
-    diff += abs(bm.get("ar", 0) - target["ar"]) * 1.0
-    diff += abs(bm.get("accuracy", 0) - target["od"]) * 0.5
-    diff += abs(bm.get("cs", 0) - target["cs"]) * 0.3
-    bpm = bm.get("bpm", target["bpm"])
-    diff += abs(bpm - target["bpm"]) / target["bpm"] * 5 if target["bpm"] else 0
-    return -diff
+MAP_TYPE_INFO = {
+    "streams":       {"label": "Streams",       "color": "#ff5555"},
+    "aim":           {"label": "Aim",            "color": "#8be9fd"},
+    "tech":          {"label": "Tech",           "color": "#bd93f9"},
+    "reading":       {"label": "Reading",        "color": "#f1fa8c"},
+    "finger control":{"label": "Finger Control", "color": "#ffb86c"},
+    "speed":         {"label": "Speed",          "color": "#ff79c6"},
+    "farm":          {"label": "Farm",           "color": "#50fa7b"},
+    "misc":          {"label": "Misc",           "color": "#888899"},
+}
 
 
-def _build_target(play):
+def classify_map_type(bm, bms=None):
+    """Classify a beatmap into one or two type labels using attribute heuristics."""
+    bms = bms or {}
+    bpm     = float(bm.get("bpm") or bms.get("bpm") or 0)
+    ar      = float(bm.get("ar") or 0)
+    od      = float(bm.get("accuracy") or 0)   # OD field
+    sr      = float(bm.get("difficulty_rating") or 0)
+    circles = int(bm.get("count_circles") or 0)
+    sliders = int(bm.get("count_sliders") or 0)
+    total   = max(circles + sliders, 1)
+    circ_r  = circles / total
+
+    types = []
+    if bpm >= 170 and circ_r >= 0.55 and sr >= 4.0:
+        types.append("streams")
+    if ar >= 9.5 and sr >= 5.5 and bpm >= 130 and "streams" not in types:
+        types.append("aim")
+    if ar <= 8.5 and sr >= 3.5:
+        types.append("reading")
+    if 120 <= bpm <= 215 and od >= 8.5 and circ_r < 0.65 and sr >= 5.0 and "streams" not in types:
+        types.append("tech")
+    if bpm < 160 and sr >= 5.5 and circ_r < 0.5:
+        types.append("finger control")
+    if bpm >= 220 and circ_r < 0.6 and "streams" not in types:
+        types.append("speed")
+
+    return types[:2] if types else ["misc"]
+
+
+# ─────────────────────────────────────────────
+# AI recommendation engine
+# ─────────────────────────────────────────────
+
+# Feature vector layout: [sr, ar, od, cs, bpm, length]
+# Weights emphasise difficulty and approach rate most
+_FEAT_W = np.array([3.0, 1.8, 0.8, 0.5, 1.2, 0.3], dtype=float)
+
+
+def _bm_to_vec(bm, bms=None):
+    """Normalise a beatmap's attributes into a 6-dim feature vector."""
+    bms = bms or {}
+    bpm = float(bm.get("bpm") or bms.get("bpm") or 180)
+    return np.array([
+        float(bm.get("difficulty_rating", 5)) / 10.0,
+        float(bm.get("ar", 9))               / 11.0,
+        float(bm.get("accuracy", 8))         / 10.0,
+        float(bm.get("cs", 4))               / 10.0,
+        min(bpm, 400)                         / 400.0,
+        min(float(bm.get("total_length", 120)), 600) / 600.0,
+    ], dtype=float)
+
+
+def _cosine(a, b):
+    n = float(np.linalg.norm(a) * np.linalg.norm(b))
+    return float(np.dot(a, b)) / n if n > 0 else 0.0
+
+
+def _build_user_context(plays, top_n=20):
+    """
+    Return (taste_vec, mapper_weights, tag_weights, type_weights) from top plays.
+    taste_vec    — PP-weighted average feature vector
+    mapper_weights — {creator_lower: normalised_score}
+    tag_weights  — {tag: normalised_score}  (lightly weighted in scoring)
+    type_weights — {type_label: normalised_score}
+    """
+    slice_ = plays[:top_n]
+    if not slice_:
+        return None, {}, {}, {}
+
+    vecs, pps = [], []
+    mapper_raw, tag_raw, type_raw = {}, {}, {}
+
+    for play in slice_:
+        bm  = play.get("beatmap", {})
+        bms = play.get("beatmapset", {})
+        pp  = float(play.get("pp") or 1)
+
+        vecs.append(_bm_to_vec(bm, bms))
+        pps.append(pp)
+
+        creator = (bms.get("creator") or "").lower().strip()
+        if creator:
+            mapper_raw[creator] = mapper_raw.get(creator, 0) + pp
+
+        for tag in (bms.get("tags") or "").lower().split():
+            if len(tag) > 2:
+                tag_raw[tag] = tag_raw.get(tag, 0) + pp
+
+        for t in classify_map_type(bm, bms):
+            type_raw[t] = type_raw.get(t, 0) + pp
+
+    vecs_np = np.array(vecs)
+    pps_np  = np.array(pps)
+    pps_np  = pps_np / pps_np.sum()
+    taste_vec = np.average(vecs_np, axis=0, weights=pps_np)
+
+    def _normalise(d):
+        mx = max(d.values()) if d else 1
+        return {k: v / mx for k, v in d.items()}
+
+    return taste_vec, _normalise(mapper_raw), _normalise(tag_raw), _normalise(type_raw)
+
+
+def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
+    """Score a candidate map (higher = better match). Returns (score, reason_str)."""
+    vec      = _bm_to_vec(bm, bms) * _FEAT_W
+    tvec     = taste_vec * _FEAT_W
+    cos_sim  = _cosine(vec, tvec)          # 0-1
+    score    = cos_sim * 100               # base 0-100
+
+    reasons  = []
+
+    # ── Attribute-based reason labels ──────
+    sr      = float(bm.get("difficulty_rating", 0))
+    ar      = float(bm.get("ar", 0))
+    bpm     = float(bm.get("bpm") or bms.get("bpm") or 0)
+    t_sr    = float(taste_vec[0] * 10)
+    t_ar    = float(taste_vec[1] * 11)
+    t_bpm   = float(taste_vec[4] * 400)
+
+    if abs(sr - t_sr) < 0.3:   reasons.append(f"very similar difficulty ({sr:.1f}★)")
+    elif abs(sr - t_sr) < 0.6: reasons.append(f"close difficulty ({sr:.1f}★)")
+    if abs(ar - t_ar) < 0.5:   reasons.append(f"same AR ({ar:.1f})")
+    if t_bpm > 0 and abs(bpm - t_bpm) / t_bpm < 0.1:
+        reasons.append(f"similar BPM ({bpm:.0f})")
+
+    # ── Mapper bonus (max +12) ──────────────
+    creator = (bms.get("creator") or "").lower().strip()
+    if creator and creator in mapper_w:
+        bonus = mapper_w[creator] * 12
+        score += bonus
+        reasons.append(f"by a mapper you like ({bms.get('creator','')})")
+
+    # ── Tag overlap bonus (lightly weighted, max +5) ──
+    bm_tags = set((bms.get("tags") or "").lower().split())
+    if bm_tags and tag_w:
+        top_tags = set(sorted(tag_w, key=tag_w.get, reverse=True)[:30])
+        overlap  = len(bm_tags & top_tags)
+        if overlap:
+            score += min(overlap / max(len(top_tags), 1), 1.0) * 5
+
+    # ── Map-type preference bonus (max +8) ──
+    bm_types = classify_map_type(bm, bms)
+    for t in bm_types:
+        if t in type_w:
+            score += type_w[t] * 8
+            break  # only count once
+
+    if not reasons:
+        reasons.append(f"{sr:.1f}★, AR{ar:.1f}")
+
+    return score, " · ".join(reasons)
+
+
+def _build_target_context(play):
+    """Build a single-play context for 'similar to this map' mode."""
     bm  = play.get("beatmap", {})
     bms = play.get("beatmapset", {})
+    vec = _bm_to_vec(bm, bms)
+    # Mapper and tag weights heavily skewed toward the specific map
+    creator = (bms.get("creator") or "").lower().strip()
+    mapper_w = {creator: 1.0} if creator else {}
+    tag_w    = {t: 1.0 for t in (bms.get("tags") or "").lower().split() if len(t) > 2}
+    type_w   = {t: 1.0 for t in classify_map_type(bm, bms)}
+    return vec, mapper_w, tag_w, type_w
+
+
+def _pack_bms(bms):
     return {
-        "sr":  bm.get("difficulty_rating", 5.0),
-        "ar":  bm.get("ar", 9.0),
-        "od":  bm.get("accuracy", 8.0),
-        "cs":  bm.get("cs", 4.0),
-        "hp":  bm.get("drain", 5.0),
-        "bpm": bm.get("bpm") or bms.get("bpm", 180),
-        "beatmap_id": bm.get("id"),
-        "beatmapset_id": bm.get("beatmapset_id"),
-        "title": bms.get("title", ""),
-        "artist": bms.get("artist", ""),
-        "creator": bms.get("creator", ""),
+        "id": bms.get("id"), "title": bms.get("title",""),
+        "artist": bms.get("artist",""), "creator": bms.get("creator",""),
+        "covers": bms.get("covers",{}), "ranked": bms.get("ranked"),
+        "status": bms.get("status",""), "bpm": bms.get("bpm"),
+        "tags": bms.get("tags",""),
+    }
+
+def _pack_bm(bm, bms):
+    return {
+        "id": bm.get("id"), "version": bm.get("version",""),
+        "difficulty_rating": bm.get("difficulty_rating",0),
+        "ar": bm.get("ar",0), "accuracy": bm.get("accuracy",0),
+        "cs": bm.get("cs",0), "drain": bm.get("drain",0),
+        "bpm": bm.get("bpm") or bms.get("bpm"), "total_length": bm.get("total_length",0),
+        "count_circles": bm.get("count_circles",0),
+        "count_sliders": bm.get("count_sliders",0),
+        "url": bm.get("url", f"https://osu.ppy.sh/b/{bm.get('id')}"),
+        "map_types": classify_map_type(bm, bms),
     }
 
 
-def _profile_from_top_plays(plays, top_n=20):
-    slice_ = plays[:top_n]
-    srs, ars, ods, css, bpms = [], [], [], [], []
-    for p in slice_:
-        bm  = p.get("beatmap", {})
-        bms = p.get("beatmapset", {})
-        srs.append(bm.get("difficulty_rating", 5.0))
-        ars.append(bm.get("ar", 9.0))
-        ods.append(bm.get("accuracy", 8.0))
-        css.append(bm.get("cs", 4.0))
-        raw_bpm = bm.get("bpm") or bms.get("bpm")
-        if raw_bpm:
-            bpms.append(raw_bpm)
-    med = statistics.median
-    bpm_med = med(bpms) if bpms else 180
-    return {
-        "sr": med(srs), "ar": med(ars), "od": med(ods), "cs": med(css),
-        "hp": 5.0, "bpm": bpm_med,
-        "beatmap_id": None, "beatmapset_id": None,
-        "title": "", "artist": "", "creator": "",
-    }
-
-
-def _build_reason(bm, target):
-    reasons = []
-    sr_diff  = abs(bm.get("difficulty_rating", 0) - target["sr"])
-    ar_diff  = abs(bm.get("ar", 0) - target["ar"])
-    bpm      = bm.get("bpm", target["bpm"])
-    bpm_pct  = abs(bpm - target["bpm"]) / max(target["bpm"], 1) * 100 if target["bpm"] else 0
-    if sr_diff < 0.3:  reasons.append(f"very similar difficulty ({bm.get('difficulty_rating',0):.1f}★)")
-    elif sr_diff < 0.6: reasons.append(f"close difficulty ({bm.get('difficulty_rating',0):.1f}★)")
-    if ar_diff < 0.5:  reasons.append(f"same AR ({bm.get('ar',0):.1f})")
-    if bpm_pct < 10:   reasons.append(f"similar BPM ({bpm:.0f})")
-    if not reasons:    reasons.append(f"{bm.get('difficulty_rating',0):.1f}★, AR{bm.get('ar',0):.1f}")
-    return " · ".join(reasons)
-
-
-def _query_nerinyan(target, played_bm_ids, played_bms_ids, rec_count=12, tolerance=1.0):
-    sr, ar, bpm = target["sr"], target["ar"], target["bpm"]
+def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
+                    rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180):
     params = {
         "m": 0, "r": "1,2,4",
-        "diff": f"{max(0, sr-tolerance):.1f}-{sr+tolerance:.1f}",
-        "ar":   f"{max(0, ar-1.0):.1f}-{min(11, ar+1.0):.1f}",
-        "bpm":  f"{bpm*0.80:.0f}-{bpm*1.20:.0f}",
+        "diff": f"{max(0, sr_center-1.0):.1f}-{sr_center+1.0:.1f}",
+        "ar":   f"{max(0, ar_center-1.2):.1f}-{min(11, ar_center+1.2):.1f}",
+        "bpm":  f"{bpm_center*0.78:.0f}-{bpm_center*1.22:.0f}",
         "p": 0, "ps": 50,
     }
     try:
@@ -338,32 +497,17 @@ def _query_nerinyan(target, played_bm_ids, played_bms_ids, rec_count=12, toleran
     results = []
     for bms in beatmapsets:
         if not isinstance(bms, dict): continue
-        bms_id = bms.get("id")
-        if bms_id in played_bms_ids: continue
+        if bms.get("id") in played_bms_ids: continue
         for bm in bms.get("beatmaps", []):
             mode_int = bm.get("mode_int", bm.get("mode"))
             if mode_int != 0 and bm.get("mode") not in ("osu", "osu!"): continue
-            bm_id = bm.get("id")
-            if bm_id in played_bm_ids: continue
-            bm["bpm"] = bm.get("bpm") or bms.get("bpm", target["bpm"])
+            if bm.get("id") in played_bm_ids: continue
+            bm["bpm"] = bm.get("bpm") or bms.get("bpm", bpm_center)
+            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w)
             results.append({
-                "beatmapset": {
-                    "id": bms.get("id"), "title": bms.get("title",""),
-                    "artist": bms.get("artist",""), "creator": bms.get("creator",""),
-                    "covers": bms.get("covers",{}), "ranked": bms.get("ranked"),
-                    "status": bms.get("status",""), "bpm": bms.get("bpm"),
-                },
-                "beatmap": {
-                    "id": bm.get("id"), "version": bm.get("version",""),
-                    "difficulty_rating": bm.get("difficulty_rating",0),
-                    "ar": bm.get("ar",0), "accuracy": bm.get("accuracy",0),
-                    "cs": bm.get("cs",0), "drain": bm.get("drain",0),
-                    "bpm": bm.get("bpm"), "total_length": bm.get("total_length",0),
-                    "url": bm.get("url", f"https://osu.ppy.sh/b/{bm.get('id')}"),
-                },
-                "score": _score_similarity(bm, target),
-                "reason": _build_reason(bm, target),
-                "source": "nerinyan",
+                "beatmapset": _pack_bms(bms),
+                "beatmap":    _pack_bm(bm, bms),
+                "score": score, "reason": reason, "source": "nerinyan",
             })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -371,13 +515,12 @@ def _query_nerinyan(target, played_bm_ids, played_bms_ids, rec_count=12, toleran
     for r in results:
         bid = r["beatmapset"]["id"]
         if bid not in seen:
-            seen.add(bid)
-            out.append(r)
+            seen.add(bid); out.append(r)
     return out[:rec_count]
 
 
-def _query_osu_search(target, played_bms_ids, rec_count=8):
-    sr = target["sr"]
+def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
+                      rec_count=8, sr_center=5.0):
     try:
         data = osu_get("/beatmapsets/search", {"m":0,"s":"ranked","sort":"plays_desc","q":""})
         beatmapsets = data.get("beatmapsets", [])
@@ -388,26 +531,13 @@ def _query_osu_search(target, played_bms_ids, rec_count=8):
         if bms.get("id") in played_bms_ids: continue
         for bm in bms.get("beatmaps", []):
             if bm.get("mode") != "osu": continue
-            if abs(bm.get("difficulty_rating",0) - sr) > 1.2: continue
-            bm["bpm"] = bm.get("bpm") or bms.get("bpm", target["bpm"])
+            if abs(bm.get("difficulty_rating",0) - sr_center) > 1.5: continue
+            bm["bpm"] = bm.get("bpm") or bms.get("bpm", 180)
+            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w)
             results.append({
-                "beatmapset": {
-                    "id": bms.get("id"), "title": bms.get("title",""),
-                    "artist": bms.get("artist",""), "creator": bms.get("creator",""),
-                    "covers": bms.get("covers",{}), "ranked": bms.get("ranked"),
-                    "status": bms.get("status",""), "bpm": bms.get("bpm"),
-                },
-                "beatmap": {
-                    "id": bm.get("id"), "version": bm.get("version",""),
-                    "difficulty_rating": bm.get("difficulty_rating",0),
-                    "ar": bm.get("ar",0), "accuracy": bm.get("accuracy",0),
-                    "cs": bm.get("cs",0), "drain": bm.get("drain",0),
-                    "bpm": bm.get("bpm"), "total_length": bm.get("total_length",0),
-                    "url": bm.get("url", f"https://osu.ppy.sh/b/{bm.get('id')}"),
-                },
-                "score": _score_similarity(bm, target),
-                "reason": _build_reason(bm, target),
-                "source": "osu",
+                "beatmapset": _pack_bms(bms),
+                "beatmap":    _pack_bm(bm, bms),
+                "score": score, "reason": reason, "source": "osu",
             })
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:rec_count]
@@ -418,16 +548,27 @@ def get_recommendations_for_profile(top_plays, cfg):
     rec_count = cfg.get("rec_count", 12)
     played_bm_ids  = {p["beatmap"]["id"] for p in top_plays if p.get("beatmap")}
     played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in top_plays if p.get("beatmap")}
-    target = _profile_from_top_plays(top_plays, top_n)
-    recs = _query_nerinyan(target, played_bm_ids, played_bms_ids, rec_count)
+
+    taste_vec, mapper_w, tag_w, type_w = _build_user_context(top_plays, top_n)
+    if taste_vec is None:
+        return []
+
+    # Pull search center from taste vector
+    sr_c  = float(taste_vec[0] * 10)
+    ar_c  = float(taste_vec[1] * 11)
+    bpm_c = float(taste_vec[4] * 400)
+
+    recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
+                           played_bm_ids, played_bms_ids, rec_count,
+                           sr_c, ar_c, bpm_c)
     if len(recs) < rec_count // 2:
-        recs += _query_osu_search(target, played_bms_ids, rec_count - len(recs))
+        recs += _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
+                                  played_bms_ids, rec_count - len(recs), sr_c)
     seen, out = set(), []
     for r in recs:
         bid = r["beatmapset"]["id"]
         if bid not in seen:
-            seen.add(bid)
-            out.append(r)
+            seen.add(bid); out.append(r)
     return out[:rec_count]
 
 
@@ -435,16 +576,25 @@ def get_recommendations_for_play(play, top_plays, cfg):
     rec_count      = cfg.get("rec_count", 12)
     played_bm_ids  = {p["beatmap"]["id"] for p in top_plays if p.get("beatmap")}
     played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in top_plays if p.get("beatmap")}
-    target = _build_target(play)
-    recs = _query_nerinyan(target, played_bm_ids, played_bms_ids, rec_count)
+
+    taste_vec, mapper_w, tag_w, type_w = _build_target_context(play)
+    bm  = play.get("beatmap", {})
+    bms = play.get("beatmapset", {})
+    sr_c  = float(bm.get("difficulty_rating", 5))
+    ar_c  = float(bm.get("ar", 9))
+    bpm_c = float(bm.get("bpm") or bms.get("bpm") or 180)
+
+    recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
+                           played_bm_ids, played_bms_ids, rec_count,
+                           sr_c, ar_c, bpm_c)
     if len(recs) < rec_count // 2:
-        recs += _query_osu_search(target, played_bms_ids, rec_count - len(recs))
+        recs += _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
+                                  played_bms_ids, rec_count - len(recs), sr_c)
     seen, out = set(), []
     for r in recs:
         bid = r["beatmapset"]["id"]
         if bid not in seen:
-            seen.add(bid)
-            out.append(r)
+            seen.add(bid); out.append(r)
     return out[:rec_count]
 
 
@@ -456,6 +606,33 @@ _poll_state = {
     "top_plays": [], "last_top_ids": [],
     "new_play_queue": [], "lock": threading.Lock(), "running": False,
 }
+
+# Per-user plays cache for OAuth mode  {username: {"plays": [...], "cached_at": float}}
+_user_plays_cache: dict = {}
+_user_plays_lock  = threading.Lock()
+_USER_PLAYS_TTL   = 300  # 5 minutes
+
+
+def _get_user_plays(username: str):
+    """Return cached plays for a user. Returns [] if stale/missing."""
+    if not OAUTH_MODE:
+        with _poll_state["lock"]:
+            return list(_poll_state["top_plays"])
+    with _user_plays_lock:
+        entry = _user_plays_cache.get(username)
+        if entry and time.time() - entry["cached_at"] < _USER_PLAYS_TTL:
+            return entry["plays"]
+    return []
+
+
+def _set_user_plays(username: str, plays: list):
+    """Store plays for a user and seed the local poll state when in local mode."""
+    if not OAUTH_MODE:
+        with _poll_state["lock"]:
+            _poll_state["top_plays"] = plays
+    else:
+        with _user_plays_lock:
+            _user_plays_cache[username] = {"plays": plays, "cached_at": time.time()}
 
 
 def _serialize_play(play):
@@ -472,12 +649,16 @@ def _serialize_play(play):
             "ar": bm.get("ar"), "accuracy": bm.get("accuracy"),
             "cs": bm.get("cs"), "drain": bm.get("drain"),
             "bpm": bm.get("bpm"), "total_length": bm.get("total_length"),
+            "count_circles": bm.get("count_circles", 0),
+            "count_sliders": bm.get("count_sliders", 0),
             "url": bm.get("url"),
+            "map_types": classify_map_type(bm, bms),
         },
         "beatmapset": {
             "id": bms.get("id"), "title": bms.get("title"),
             "artist": bms.get("artist"), "creator": bms.get("creator"),
             "covers": bms.get("covers", {}), "bpm": bms.get("bpm"),
+            "tags": bms.get("tags", ""),
         },
     }
 
@@ -683,14 +864,18 @@ def api_me():
     if OAUTH_MODE:
         if "osu_username" not in session:
             return jsonify({"logged_in": False, "oauth_mode": True})
+        cfg = load_config()
         return jsonify({
-            "logged_in":    True,
-            "oauth_mode":   True,
-            "username":     session.get("osu_username"),
-            "user_id":      session.get("osu_user_id"),
-            "avatar_url":   session.get("osu_avatar"),
-            "pp":           session.get("osu_pp"),
-            "global_rank":  session.get("osu_rank"),
+            "logged_in":     True,
+            "oauth_mode":    True,
+            "username":      session.get("osu_username"),
+            "user_id":       session.get("osu_user_id"),
+            "avatar_url":    session.get("osu_avatar"),
+            "pp":            session.get("osu_pp"),
+            "global_rank":   session.get("osu_rank"),
+            "top_n":         cfg.get("top_n", 20),
+            "poll_interval": cfg.get("poll_interval", 30),
+            "rec_count":     cfg.get("rec_count", 12),
         })
     else:
         p = get_active_profile()
@@ -764,10 +949,11 @@ def api_top_plays():
         plays = fetch_top_plays(username, 100)
         serialized = [_serialize_play(p) for p in plays]
         cfg = load_config()
-        with _poll_state["lock"]:
-            _poll_state["top_plays"] = plays
-            if not _poll_state["last_top_ids"]:
-                _poll_state["last_top_ids"] = [p["best_id"] for p in plays[:cfg.get("top_n",20)]]
+        _set_user_plays(username, plays)
+        if not OAUTH_MODE:
+            with _poll_state["lock"]:
+                if not _poll_state["last_top_ids"]:
+                    _poll_state["last_top_ids"] = [p["best_id"] for p in plays[:cfg.get("top_n", 20)]]
         return jsonify({"plays": serialized})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -814,12 +1000,10 @@ def api_recommendations():
         return jsonify({"error": "Not logged in"}), 401
     cfg = load_config()
     try:
-        with _poll_state["lock"]:
-            plays = _poll_state["top_plays"]
+        plays = _get_user_plays(username)
         if not plays:
             plays = fetch_top_plays(username, 100)
-            with _poll_state["lock"]:
-                _poll_state["top_plays"] = plays
+            _set_user_plays(username, plays)
         recs = get_recommendations_for_profile(plays, cfg)
         return jsonify({"recommendations": recs})
     except Exception as e:
@@ -833,10 +1017,10 @@ def api_recommendations_for_play(play_index):
         return jsonify({"error": "Not logged in"}), 401
     cfg = load_config()
     try:
-        with _poll_state["lock"]:
-            plays = _poll_state["top_plays"]
+        plays = _get_user_plays(username)
         if not plays:
             plays = fetch_top_plays(username, 100)
+            _set_user_plays(username, plays)
         if play_index >= len(plays):
             return jsonify({"error": "play index out of range"}), 400
         play = plays[play_index]
