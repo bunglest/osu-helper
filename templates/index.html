@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>osu!helper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script>window.OAUTH_MODE = {{ 'true' if oauth_mode else 'false' }};</script>
+</head>
+<body>
+
+<!-- ───── TOAST NOTIFICATIONS ───── -->
+<div id="toast-container"></div>
+
+<!-- ───── OAUTH LOGIN SCREEN ───── -->
+<div id="oauth-login-screen" class="overlay hidden">
+  <div class="modal login-modal">
+    <div class="modal-header">
+      <div class="osu-logo">osu!</div>
+      <h2>Welcome to osu!helper</h2>
+      <p>Log in with your osu! account to get personalised beatmap recommendations based on your top plays.</p>
+    </div>
+    <a href="/auth/login" class="btn btn-primary btn-full login-osu-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#1a1a2e"/></svg>
+      Login with osu!
+    </a>
+    <p class="login-note">Your credentials are never stored — we only remember your username.</p>
+  </div>
+</div>
+
+<!-- ───── LOCAL SETUP OVERLAY ───── -->
+<div id="setup-overlay" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="osu-logo">osu!</div>
+      <h2>Add your first profile</h2>
+      <p>Create an osu! OAuth application to get started.<br>
+         <a href="https://osu.ppy.sh/home/account/edit#oauth" target="_blank">Create one here ↗</a> — set it as <strong>Public</strong>, no callback URL needed.</p>
+    </div>
+    <div class="form-group">
+      <label>osu! Username</label>
+      <input id="setup-username" type="text" placeholder="e.g. Krazar" />
+    </div>
+    <div class="form-group">
+      <label>Client ID</label>
+      <input id="setup-client-id" type="text" placeholder="e.g. 12345" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label>Client Secret</label>
+      <input id="setup-client-secret" type="password" placeholder="your client secret" autocomplete="off" />
+    </div>
+    <div id="setup-error" class="error-msg hidden"></div>
+    <button id="setup-btn" class="btn btn-primary btn-full">
+      <span id="setup-btn-text">Connect to osu!</span>
+      <span id="setup-spinner" class="spinner hidden"></span>
+    </button>
+  </div>
+</div>
+
+<!-- ───── NEW TOP PLAY ALERT ───── -->
+<div id="new-play-banner" class="new-play-banner hidden">
+  <div class="new-play-inner">
+    <div class="new-play-icon">🎉</div>
+    <div class="new-play-info">
+      <span class="new-play-label">New Top Play!</span>
+      <span id="new-play-title">...</span>
+    </div>
+    <button id="new-play-view-btn" class="btn btn-sm btn-pink">View Recs</button>
+    <button id="new-play-close" class="btn-close">✕</button>
+  </div>
+</div>
+
+<!-- ───── HEADER ───── -->
+<header class="header">
+  <div class="header-left">
+    <div class="logo">
+      <span class="logo-osu">osu!</span><span class="logo-helper">helper</span>
+    </div>
+  </div>
+
+  <div class="header-center">
+    <nav class="tabs">
+      <button class="tab active" data-tab="plays">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+        Top Plays
+      </button>
+      <button class="tab" data-tab="recs">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+        Recommendations
+      </button>
+      <button class="tab" data-tab="settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
+        Settings
+      </button>
+    </nav>
+  </div>
+
+  <div class="header-right">
+    <!-- Profile switcher (local mode) -->
+    <div id="profile-switcher" class="profile-switcher hidden">
+      <button class="profile-chip" id="profile-chip-btn" onclick="toggleProfileMenu()">
+        <img id="profile-avatar" src="" alt="" class="avatar-sm" onerror="this.style.display='none'" />
+        <div class="profile-chip-info">
+          <span id="profile-chip-name">—</span>
+          <span id="profile-chip-pp">—pp</span>
+        </div>
+        <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+      </button>
+
+      <div id="profile-menu" class="profile-menu hidden">
+        <div class="profile-menu-header">Profiles</div>
+        <div id="profile-menu-list"></div>
+        <div class="profile-menu-footer">
+          <button class="btn btn-ghost btn-sm btn-full" onclick="openAddProfile()">+ Add profile</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- OAuth user chip -->
+    <div id="oauth-user-chip" class="user-chip hidden">
+      <img id="oauth-avatar" src="" alt="avatar" class="avatar-sm" />
+      <div class="user-chip-info">
+        <span id="oauth-username">—</span>
+        <span id="oauth-pp">—pp</span>
+      </div>
+      <a href="/auth/logout" class="btn-logout" title="Logout">↩</a>
+    </div>
+
+    <div id="live-dot" class="live-dot hidden" title="Live polling active">
+      <span class="pulse"></span>LIVE
+    </div>
+  </div>
+</header>
+
+<!-- ───── ADD PROFILE MODAL ───── -->
+<div id="add-profile-modal" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Add Profile</h2>
+      <p>Each profile can have a different osu! username and API credentials.</p>
+    </div>
+    <div class="form-group">
+      <label>osu! Username</label>
+      <input id="ap-username" type="text" placeholder="e.g. Cookiezi" />
+    </div>
+    <div class="form-group">
+      <label>Display Name <span style="color:var(--text-muted)">(optional)</span></label>
+      <input id="ap-display-name" type="text" placeholder="defaults to username" />
+    </div>
+    <div class="form-group">
+      <label>Client ID <a href="https://osu.ppy.sh/home/account/edit#oauth" target="_blank" class="link-dim">Get one ↗</a></label>
+      <input id="ap-client-id" type="text" placeholder="same as your main app is fine" />
+    </div>
+    <div class="form-group">
+      <label>Client Secret</label>
+      <input id="ap-client-secret" type="password" />
+    </div>
+    <div id="ap-error" class="error-msg hidden"></div>
+    <div style="display:flex;gap:.75rem;margin-top:.5rem">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeAddProfile()">Cancel</button>
+      <button class="btn btn-primary" style="flex:1" onclick="submitAddProfile()">
+        <span id="ap-btn-text">Add Profile</span>
+        <span id="ap-spinner" class="spinner hidden"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ───── MAIN ───── -->
+<main class="main">
+
+  <!-- ══ TOP PLAYS TAB ══ -->
+  <section id="tab-plays" class="tab-content active">
+    <div class="section-header">
+      <div>
+        <h2>Top Plays</h2>
+        <p class="subtitle" id="plays-subtitle">Showing your best scores</p>
+      </div>
+      <button id="refresh-plays-btn" class="btn btn-ghost btn-sm">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        Refresh
+      </button>
+    </div>
+    <div id="plays-loading" class="loading-state"><div class="spinner-lg"></div><p>Loading top plays…</p></div>
+    <div id="plays-error" class="error-state hidden"><div class="error-icon">⚠️</div><p id="plays-error-msg">Something went wrong</p><button class="btn btn-ghost btn-sm" onclick="loadTopPlays()">Retry</button></div>
+    <div id="plays-grid" class="plays-grid hidden"></div>
+  </section>
+
+  <!-- ══ RECOMMENDATIONS TAB ══ -->
+  <section id="tab-recs" class="tab-content">
+    <div class="section-header">
+      <div>
+        <h2 id="recs-title">Recommendations</h2>
+        <p class="subtitle" id="recs-subtitle">Based on your overall taste profile</p>
+      </div>
+      <div class="recs-controls">
+        <button id="recs-profile-btn" class="btn btn-ghost btn-sm active-mode" onclick="switchRecMode('profile')">Profile</button>
+        <button id="refresh-recs-btn" class="btn btn-ghost btn-sm">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+    <div id="recs-loading" class="loading-state"><div class="spinner-lg"></div><p>Generating recommendations…</p></div>
+    <div id="recs-error" class="error-state hidden"><div class="error-icon">⚠️</div><p id="recs-error-msg">Could not load recommendations</p><button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">Retry</button></div>
+    <div id="recs-grid" class="recs-grid hidden"></div>
+  </section>
+
+  <!-- ══ SETTINGS TAB ══ -->
+  <section id="tab-settings" class="tab-content">
+    <div class="settings-container">
+
+      <!-- Profiles section (local mode only) -->
+      <div id="profiles-card" class="settings-card hidden">
+        <h3>Profiles</h3>
+        <div id="profiles-list" class="profiles-list"></div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:.75rem" onclick="openAddProfile()">+ Add Profile</button>
+      </div>
+
+      <!-- OAuth mode: just show logged-in info -->
+      <div id="oauth-info-card" class="settings-card hidden">
+        <h3>Account</h3>
+        <p style="font-size:.85rem;color:var(--text-dim)">You are logged in via osu! OAuth. <a href="/auth/logout">Logout</a></p>
+      </div>
+
+      <!-- Active profile credentials (local mode) -->
+      <div id="credentials-card" class="settings-card hidden">
+        <h3>Active Profile Credentials</h3>
+        <div class="form-group">
+          <label>osu! Username</label>
+          <input id="settings-username" type="text" />
+        </div>
+        <div class="form-group">
+          <label>Client ID <a href="https://osu.ppy.sh/home/account/edit#oauth" target="_blank" class="link-dim">Get one ↗</a></label>
+          <input id="settings-client-id" type="text" />
+        </div>
+        <div class="form-group">
+          <label>Client Secret</label>
+          <input id="settings-client-secret" type="password" placeholder="(hidden — leave blank to keep)" />
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="testCredentials()">Test Connection</button>
+          <button class="btn btn-primary btn-sm" onclick="saveActiveProfileCredentials()">Save Credentials</button>
+        </div>
+        <div id="settings-test-result" class="test-result hidden"></div>
+      </div>
+
+      <!-- Polling & recs settings -->
+      <div class="settings-card">
+        <h3>Polling &amp; Recommendations</h3>
+        <div class="form-group">
+          <label>New top play alert threshold</label>
+          <div class="input-with-unit">
+            <input id="settings-top-n" type="number" min="1" max="100" />
+            <span class="unit">top scores</span>
+          </div>
+          <p class="field-hint">Trigger new recommendations when a play enters your top <em>N</em></p>
+        </div>
+        <div class="form-group" id="poll-interval-group">
+          <label>Poll interval</label>
+          <div class="input-with-unit">
+            <input id="settings-poll-interval" type="number" min="10" max="3600" />
+            <span class="unit">seconds</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Recommendations per refresh</label>
+          <div class="input-with-unit">
+            <input id="settings-rec-count" type="number" min="4" max="50" />
+            <span class="unit">maps</span>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+          <span id="settings-save-ok" class="save-ok hidden">✓ Saved</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
