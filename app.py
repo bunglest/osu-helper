@@ -327,9 +327,11 @@ def classify_map_type(bm, bms=None):
 # AI recommendation engine
 # ─────────────────────────────────────────────
 
-# Feature vector layout: [sr, ar, od, cs, bpm, length, note_density]
-# note_density = circles/drain_time captures how "streamy" a map is
-_FEAT_W = np.array([3.0, 1.8, 0.8, 0.5, 1.2, 0.3, 2.0], dtype=float)
+# Feature vector layout: [sr, ar, od, cs, bpm, length, note_density, combo_ratio]
+# note_density   = circles/drain_time  — how "streamy" a map is
+# combo_ratio    = max_combo/(circles+sliders) — proxy for average slider length;
+#                  circle-only maps ≈1, long-slider maps can be 3-4+
+_FEAT_W = np.array([3.0, 1.8, 0.8, 0.5, 1.2, 0.3, 2.0, 0.6], dtype=float)
 
 
 def _note_density(bm):
@@ -339,19 +341,49 @@ def _note_density(bm):
     return circles / drain
 
 
-def _bm_to_vec(bm, bms=None):
-    """Normalise a beatmap's attributes into a 7-dim feature vector."""
+def _combo_ratio(bm):
+    """
+    max_combo / (circles + sliders) — approximates average slider length.
+    Each circle contributes 1 combo; sliders contribute head + ticks + tail,
+    so maps with long sliders have a higher ratio than short-slider/circle maps.
+    Capped at 4 for normalisation (most maps fall well under that).
+    """
+    circles  = int(bm.get("count_circles") or 0)
+    sliders  = int(bm.get("count_sliders") or 0)
+    objects  = circles + sliders
+    if objects == 0:
+        return 0.5   # sensible default
+    max_combo = int(bm.get("max_combo") or objects)   # fallback: assume 1/obj
+    return min(max_combo / objects, 4.0) / 4.0        # normalise to [0, 1]
+
+
+def _bm_to_vec(bm, bms=None, mods=None):
+    """
+    Normalise a beatmap's attributes into an 8-dim feature vector.
+    When `mods` is provided the speed/AR/OD adjustments from DT/HT/HR/EZ are
+    applied so the vector reflects what the player actually experienced.
+    """
     bms = bms or {}
-    bpm     = float(bm.get("bpm") or bms.get("bpm") or 180)
+
+    if mods:
+        bpm, ar, od, cs, sr = _apply_mods(bm, bms, mods)
+    else:
+        bpm = float(bm.get("bpm") or bms.get("bpm") or 180)
+        ar  = float(bm.get("ar", 9))
+        od  = float(bm.get("accuracy", 8))
+        cs  = float(bm.get("cs", 4))
+        sr  = float(bm.get("difficulty_rating", 5))
+
     density = min(_note_density(bm), 15) / 15.0   # cap at 15 circles/sec
     return np.array([
-        float(bm.get("difficulty_rating", 5)) / 10.0,
-        float(bm.get("ar", 9))               / 11.0,
-        float(bm.get("accuracy", 8))         / 10.0,
-        float(bm.get("cs", 4))               / 10.0,
+        sr / 10.0,
+        ar / 11.0,
+        od / 10.0,
+        cs / 10.0,
         min(bpm, 400)                         / 400.0,
         min(float(bm.get("total_length", 120)), 600) / 600.0,
         density,
+        _combo_ratio(bm),
     ], dtype=float)
 
 
@@ -360,44 +392,138 @@ def _cosine(a, b):
     return float(np.dot(a, b)) / n if n > 0 else 0.0
 
 
+# ── Mod adjustment helpers ──────────────────────────────────────────────────
+
+def _ar_to_ms(ar):
+    """AR → preempt window in ms (used for DT/HT/HR/EZ adjustment)."""
+    return 1800 - 120 * ar if ar <= 5 else 1200 - 150 * (ar - 5)
+
+
+def _ms_to_ar(ms):
+    """Preempt window in ms → AR."""
+    return (1800 - ms) / 120 if ms >= 1200 else 5 + (1200 - ms) / 150
+
+
+def _od_to_ms(od):
+    """OD → 300-hit window in ms."""
+    return 80 - 6 * od
+
+
+def _ms_to_od(ms):
+    """300-hit window in ms → OD."""
+    return (80 - ms) / 6
+
+
+def _apply_mods(bm, bms, mods):
+    """
+    Return mod-adjusted (bpm, ar, od, cs, sr) for a beatmap + mods list.
+    mods may be a list of strings like ["HD","DT"] or dicts {"acronym":"DT"}.
+    Order: HR/EZ applied first (stat multipliers), then DT/HT (speed change).
+    """
+    bpm = float(bm.get("bpm") or bms.get("bpm") or 180)
+    ar  = float(bm.get("ar", 9))
+    od  = float(bm.get("accuracy", 8))
+    cs  = float(bm.get("cs", 4))
+    sr  = float(bm.get("difficulty_rating", 5))
+
+    # Normalise mod list to uppercase acronym strings
+    acronyms = set()
+    for m in (mods or []):
+        if isinstance(m, str):
+            acronyms.add(m.upper())
+        elif isinstance(m, dict):
+            acronyms.add(m.get("acronym", "").upper())
+
+    # HR: CS ×1.3 (cap 10), AR ×1.4 (cap 10), OD ×1.4 (cap 10)
+    if "HR" in acronyms:
+        cs = min(cs * 1.3, 10.0)
+        ar = min(ar * 1.4, 10.0)
+        od = min(od * 1.4, 10.0)
+
+    # EZ: all stats ×0.5
+    if "EZ" in acronyms:
+        cs = cs * 0.5
+        ar = ar * 0.5
+        od = od * 0.5
+
+    # DT / NC: speed ×1.5 → adjust AR and OD through their ms windows
+    if "DT" in acronyms or "NC" in acronyms:
+        bpm = bpm * 1.5
+        ar  = _ms_to_ar(_ar_to_ms(ar) / 1.5)
+        od  = _ms_to_od(_od_to_ms(od) / 1.5)
+        sr  = sr * 1.35   # rough approximation; actual SR varies by map
+
+    # HT: speed ×0.75
+    if "HT" in acronyms:
+        bpm = bpm * 0.75
+        ar  = _ms_to_ar(_ar_to_ms(ar) / 0.75)
+        od  = _ms_to_od(_od_to_ms(od) / 0.75)
+        sr  = sr * 0.88
+
+    return bpm, min(ar, 11.0), min(od, 11.0), min(cs, 10.0), sr
+
+
 def _build_user_context(plays, top_n=20):
     """
     Return (taste_vec, mapper_weights, tag_weights, type_weights) from top plays.
-    taste_vec    — PP-weighted average feature vector
-    mapper_weights — {creator_lower: normalised_score}
-    tag_weights  — {tag: normalised_score}  (lightly weighted in scoring)
-    type_weights — {type_label: normalised_score}
+
+    Weighting scheme: pp × accuracy × time_decay
+      • pp       — higher-pp plays are more representative of skill ceiling
+      • accuracy — a 99% on a 300pp map is more informative than a 92% FC on
+                   a 500pp play with a lucky run
+      • time_decay — plays from 2+ years ago reflect a different skill level;
+                     weight decays with a ~180-day half-life so recent form
+                     dominates without completely ignoring history
+
+    Also uses mod-adjusted feature vectors (DT/HT/HR/EZ) so the taste profile
+    reflects what the player actually experienced, not the raw map stats.
     """
     slice_ = plays[:top_n]
     if not slice_:
         return None, {}, {}, {}
 
-    vecs, pps = [], []
+    vecs, weights = [], []
     mapper_raw, tag_raw, type_raw = {}, {}, {}
+    now_ts = time.time()
 
     for play in slice_:
-        bm  = play.get("beatmap", {})
-        bms = play.get("beatmapset", {})
-        pp  = float(play.get("pp") or 1)
+        bm   = play.get("beatmap", {})
+        bms  = play.get("beatmapset", {})
+        pp   = float(play.get("pp") or 1)
+        acc  = float(play.get("accuracy") or 1.0)   # 0–1 float from API
+        mods = play.get("mods", [])
 
-        vecs.append(_bm_to_vec(bm, bms))
-        pps.append(pp)
+        # Time decay: half-life of 180 days
+        time_weight = 1.0
+        created_at  = play.get("created_at", "")
+        if created_at:
+            try:
+                play_ts    = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+                days_ago   = max(0.0, (now_ts - play_ts) / 86400)
+                time_weight = 0.5 ** (days_ago / 180)
+            except Exception:
+                time_weight = 1.0
+
+        combined_w = pp * acc * time_weight
+
+        vecs.append(_bm_to_vec(bm, bms, mods))   # mod-adjusted vector
+        weights.append(combined_w)
 
         creator = (bms.get("creator") or "").lower().strip()
         if creator:
-            mapper_raw[creator] = mapper_raw.get(creator, 0) + pp
+            mapper_raw[creator] = mapper_raw.get(creator, 0) + combined_w
 
         for tag in (bms.get("tags") or "").lower().split():
             if len(tag) > 2:
-                tag_raw[tag] = tag_raw.get(tag, 0) + pp
+                tag_raw[tag] = tag_raw.get(tag, 0) + combined_w
 
         for t in classify_map_type(bm, bms):
-            type_raw[t] = type_raw.get(t, 0) + pp
+            type_raw[t] = type_raw.get(t, 0) + combined_w
 
-    vecs_np = np.array(vecs)
-    pps_np  = np.array(pps)
-    pps_np  = pps_np / pps_np.sum()
-    taste_vec = np.average(vecs_np, axis=0, weights=pps_np)
+    vecs_np    = np.array(vecs)
+    weights_np = np.array(weights)
+    weights_np = weights_np / weights_np.sum()
+    taste_vec  = np.average(vecs_np, axis=0, weights=weights_np)
 
     def _normalise(d):
         mx = max(d.values()) if d else 1
@@ -456,6 +582,19 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
             score += type_w[t] * 8
             break  # only count once
 
+    # ── Pass-rate penalty ────────────────────
+    # Avoids recommending maps that almost nobody clears unless the user
+    # specifically enjoys brutal maps.  Only applied when we have enough
+    # playcount data to trust the ratio (>= 200 attempts).
+    passcount = int(bm.get("passcount") or 0)
+    playcount = int(bm.get("playcount") or 0)
+    if playcount >= 200:
+        pass_rate = passcount / playcount
+        if pass_rate < 0.05:      # < 5 % — extremely brutal
+            score *= 0.70
+        elif pass_rate < 0.15:    # 5–15 % — noticeably punishing
+            score *= 0.87
+
     if not reasons:
         reasons.append(f"{sr:.1f}★, AR{ar:.1f}")
 
@@ -464,9 +603,12 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
 
 def _build_target_context(play):
     """Build a single-play context for 'similar to this map' mode."""
-    bm  = play.get("beatmap", {})
-    bms = play.get("beatmapset", {})
-    vec = _bm_to_vec(bm, bms)
+    bm   = play.get("beatmap", {})
+    bms  = play.get("beatmapset", {})
+    mods = play.get("mods", [])
+    # Use mod-adjusted vector so the search centre reflects the actual
+    # AR/BPM the player experienced (important for DT players especially).
+    vec = _bm_to_vec(bm, bms, mods)
     # Mapper and tag weights heavily skewed toward the specific map
     creator = (bms.get("creator") or "").lower().strip()
     mapper_w = {creator: 1.0} if creator else {}
@@ -493,6 +635,9 @@ def _pack_bm(bm, bms):
         "bpm": bm.get("bpm") or bms.get("bpm"), "total_length": bm.get("total_length",0),
         "count_circles": bm.get("count_circles",0),
         "count_sliders": bm.get("count_sliders",0),
+        "max_combo":     bm.get("max_combo", 0),
+        "passcount":     bm.get("passcount", 0),
+        "playcount":     bm.get("playcount", 0),
         "url": bm.get("url", f"https://osu.ppy.sh/b/{bm.get('id')}"),
         "map_types": classify_map_type(bm, bms),
     }
