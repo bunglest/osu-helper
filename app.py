@@ -298,18 +298,25 @@ def classify_map_type(bm, bms=None):
     sliders = int(bm.get("count_sliders") or 0)
     total   = max(circles + sliders, 1)
     circ_r  = circles / total
+    density = _note_density(bm)   # circles per second — key stream signal
 
     types = []
-    if bpm >= 170 and circ_r >= 0.55 and sr >= 4.0:
+    # Streams: high BPM + circle-heavy + must actually have dense circles (>=4/sec)
+    if bpm >= 170 and circ_r >= 0.55 and sr >= 4.0 and density >= 4.0:
         types.append("streams")
+    # Aim: high AR, high SR, moderate+ BPM — large jumpy patterns
     if ar >= 9.5 and sr >= 5.5 and bpm >= 130 and "streams" not in types:
         types.append("aim")
+    # Reading: low AR makes patterns hard to read regardless of other stats
     if ar <= 8.5 and sr >= 3.5:
         types.append("reading")
+    # Tech: mid BPM, high OD, slider-heavy (low circle ratio), complex patterns
     if 120 <= bpm <= 215 and od >= 8.5 and circ_r < 0.65 and sr >= 5.0 and "streams" not in types:
         types.append("tech")
+    # Finger control: slow BPM but hard — sliders/bursts demand control
     if bpm < 160 and sr >= 5.5 and circ_r < 0.5:
         types.append("finger control")
+    # Speed: very fast BPM but not circle-dense enough to be full streams
     if bpm >= 220 and circ_r < 0.6 and "streams" not in types:
         types.append("speed")
 
@@ -320,15 +327,23 @@ def classify_map_type(bm, bms=None):
 # AI recommendation engine
 # ─────────────────────────────────────────────
 
-# Feature vector layout: [sr, ar, od, cs, bpm, length]
-# Weights emphasise difficulty and approach rate most
-_FEAT_W = np.array([3.0, 1.8, 0.8, 0.5, 1.2, 0.3], dtype=float)
+# Feature vector layout: [sr, ar, od, cs, bpm, length, note_density]
+# note_density = circles/drain_time captures how "streamy" a map is
+_FEAT_W = np.array([3.0, 1.8, 0.8, 0.5, 1.2, 0.3, 2.0], dtype=float)
+
+
+def _note_density(bm):
+    """Circles per second — key stream/aim discriminator."""
+    circles = int(bm.get("count_circles") or 0)
+    drain   = max(float(bm.get("drain") or bm.get("total_length") or 60), 1)
+    return circles / drain
 
 
 def _bm_to_vec(bm, bms=None):
-    """Normalise a beatmap's attributes into a 6-dim feature vector."""
+    """Normalise a beatmap's attributes into a 7-dim feature vector."""
     bms = bms or {}
-    bpm = float(bm.get("bpm") or bms.get("bpm") or 180)
+    bpm     = float(bm.get("bpm") or bms.get("bpm") or 180)
+    density = min(_note_density(bm), 15) / 15.0   # cap at 15 circles/sec
     return np.array([
         float(bm.get("difficulty_rating", 5)) / 10.0,
         float(bm.get("ar", 9))               / 11.0,
@@ -336,6 +351,7 @@ def _bm_to_vec(bm, bms=None):
         float(bm.get("cs", 4))               / 10.0,
         min(bpm, 400)                         / 400.0,
         min(float(bm.get("total_length", 120)), 600) / 600.0,
+        density,
     ], dtype=float)
 
 
@@ -407,11 +423,16 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
     t_ar    = float(taste_vec[1] * 11)
     t_bpm   = float(taste_vec[4] * 400)
 
+    density   = _note_density(bm)
+    t_density = float(taste_vec[6] * 15)
+
     if abs(sr - t_sr) < 0.3:   reasons.append(f"very similar difficulty ({sr:.1f}★)")
     elif abs(sr - t_sr) < 0.6: reasons.append(f"close difficulty ({sr:.1f}★)")
     if abs(ar - t_ar) < 0.5:   reasons.append(f"same AR ({ar:.1f})")
     if t_bpm > 0 and abs(bpm - t_bpm) / t_bpm < 0.1:
         reasons.append(f"similar BPM ({bpm:.0f})")
+    if t_density > 1 and abs(density - t_density) / max(t_density, 1) < 0.2:
+        reasons.append(f"similar note density ({density:.1f}/s)")
 
     # ── Mapper bonus (max +12) ──────────────
     creator = (bms.get("creator") or "").lower().strip()
