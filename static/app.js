@@ -120,6 +120,7 @@ document.getElementById('setup-btn')?.addEventListener('click', async () => {
 // ─── Profiles (local mode) ───────────────────
 async function loadProfiles() {
   if (OAUTH_MODE) return;
+  try {
   const r    = await fetch('/api/profiles');
   const data = await r.json();
   allProfiles   = data.profiles || [];
@@ -136,6 +137,9 @@ async function loadProfiles() {
   document.getElementById('settings-username').value    = active.username || '';
   document.getElementById('settings-client-id').value  = active.client_id || '';
   document.getElementById('settings-client-secret').value = '';
+  } catch (_) {
+    toast('Could not load profiles', 'err');
+  }
 }
 
 function renderProfileSwitcher() {
@@ -210,10 +214,43 @@ async function switchProfile(id) {
 }
 
 async function deleteProfile(id) {
-  if (!confirm('Delete this profile?')) return;
-  await fetch(`/api/profiles/${id}`, { method: 'DELETE' });
-  await loadProfiles();
-  toast('Profile deleted', 'ok');
+  const profile = allProfiles.find(p => p.id === id);
+  const name = profile?.display_name || profile?.username || 'this profile';
+  showConfirm(
+    'Delete profile',
+    `Are you sure you want to remove "${name}"? This cannot be undone.`,
+    async () => {
+      try {
+        await fetch(`/api/profiles/${id}`, { method: 'DELETE' });
+        await loadProfiles();
+        toast('Profile deleted', 'ok');
+      } catch (_) {
+        toast('Could not delete profile', 'err');
+      }
+    }
+  );
+}
+
+// ─── Inline confirm modal ────────────────────
+function showConfirm(title, msg, onOk) {
+  const modal = document.getElementById('confirm-modal');
+  if (!modal) { if (window.confirm(msg)) onOk(); return; }
+  document.getElementById('confirm-modal-title').textContent = title;
+  document.getElementById('confirm-modal-msg').textContent   = msg;
+  modal.classList.remove('hidden');
+
+  const okBtn     = document.getElementById('confirm-ok-btn');
+  const cancelBtn = document.getElementById('confirm-cancel-btn');
+
+  function cleanup() {
+    modal.classList.add('hidden');
+    okBtn.removeEventListener('click', handleOk);
+    cancelBtn.removeEventListener('click', cleanup);
+  }
+  function handleOk() { cleanup(); onOk(); }
+
+  okBtn.addEventListener('click', handleOk);
+  cancelBtn.addEventListener('click', cleanup);
 }
 
 function openAddProfile() {
@@ -455,11 +492,13 @@ document.getElementById('refresh-plays-btn')?.addEventListener('click', loadTopP
 function showPlaysLoading() {
   document.getElementById('plays-loading').classList.remove('hidden');
   document.getElementById('plays-error').classList.add('hidden');
+  document.getElementById('plays-empty')?.classList.add('hidden');
   document.getElementById('plays-grid').classList.add('hidden');
 }
 function showPlaysError(msg) {
   document.getElementById('plays-loading').classList.add('hidden');
   document.getElementById('plays-error').classList.remove('hidden');
+  document.getElementById('plays-empty')?.classList.add('hidden');
   document.getElementById('plays-grid').classList.add('hidden');
   document.getElementById('plays-error-msg').textContent = msg;
 }
@@ -467,7 +506,14 @@ function showPlaysError(msg) {
 function renderTopPlays(plays) {
   document.getElementById('plays-loading').classList.add('hidden');
   document.getElementById('plays-error').classList.add('hidden');
+  const emptyEl = document.getElementById('plays-empty');
   const grid = document.getElementById('plays-grid');
+  if (!plays.length) {
+    emptyEl?.classList.remove('hidden');
+    grid.classList.add('hidden');
+    return;
+  }
+  emptyEl?.classList.add('hidden');
   grid.classList.remove('hidden');
   grid.innerHTML = plays.map((p, i) => buildPlayCard(p, i)).join('');
 }
@@ -777,12 +823,27 @@ function checkAuthError() {
 
 // ─── Tab navigation ──────────────────────────
 function setupTabs() {
+  // Desktop header tabs
   document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+  // Mobile bottom nav tabs
+  document.querySelectorAll('.mobile-tab').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 }
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  // Desktop header tabs — update active + ARIA
+  document.querySelectorAll('.tab').forEach(t => {
+    const active = t.dataset.tab === name;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  // Mobile bottom nav tabs
+  document.querySelectorAll('.mobile-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  // Tab panels
   document.querySelectorAll('.tab-content').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
 }
 
@@ -828,6 +889,7 @@ window.loadTopPlays                  = loadTopPlays;
 window.loadRecommendations           = loadRecommendations;
 window.loadRecsForPlay               = loadRecsForPlay;
 window.switchRecMode                 = switchRecMode;
+window.switchTab                     = switchTab;
 window.saveSettings                  = saveSettings;
 window.saveRecPrefs                  = saveRecPrefs;
 window.testCredentials               = testCredentials;
@@ -839,3 +901,4 @@ window.openAddProfile                = openAddProfile;
 window.closeAddProfile               = closeAddProfile;
 window.submitAddProfile              = submitAddProfile;
 window.dismissRecById                = dismissRecById;
+window.showConfirm                   = showConfirm;
