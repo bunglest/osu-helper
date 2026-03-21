@@ -495,6 +495,97 @@ def _apply_mods(bm, bms, mods):
     return bpm, min(ar, 11.0), min(od, 11.0), min(cs, 10.0), sr
 
 
+# ── Mod preference helpers ───────────────────────────────────────────────────
+
+_SKILL_MODS = {"DT", "NC", "HT", "HR", "EZ"}  # mods that change difficulty stats
+
+def _normalise_acronyms(mods):
+    """Return a set of uppercase acronym strings from any mod list format."""
+    out = set()
+    for m in (mods or []):
+        if isinstance(m, str):
+            out.add(m.upper())
+        elif isinstance(m, dict):
+            out.add(m.get("acronym", "").upper())
+    return out
+
+
+def _detect_preferred_mods(plays, top_n=20):
+    """
+    Detect which skill-affecting mods (DT/HR/HT/EZ) this player uses most,
+    weighted by the pp of each play.
+
+    Returns:
+        mod_weights  — {acronym: normalised_weight} for mods used on >20% of
+                       weighted plays (e.g. {"DT": 0.85, "HR": 0.30})
+        dominant_combo — the single highest-weighted mod combo as a list of
+                         acronym strings (e.g. ["DT"] or ["DT", "HR"])
+    """
+    acronym_w = {}
+    combo_w   = {}
+    total_pp  = 0.0
+
+    for play in plays[:top_n]:
+        pp      = float(play.get("pp") or 1)
+        acronyms = _normalise_acronyms(play.get("mods", []))
+        skill    = tuple(sorted(acronyms & _SKILL_MODS))
+
+        combo_w[skill]  = combo_w.get(skill, 0.0)  + pp
+        for a in skill:
+            acronym_w[a] = acronym_w.get(a, 0.0) + pp
+        total_pp += pp
+
+    if not total_pp:
+        return {}, []
+
+    norm_w         = {k: v / total_pp for k, v in acronym_w.items()}
+    significant    = {k: v for k, v in norm_w.items() if v > 0.20}
+    dominant_combo = list(max(combo_w, key=combo_w.get)) if combo_w else []
+    # Drop empty tuple → empty list when NM is the dominant combo
+    dominant_combo = [a for a in dominant_combo if a in _SKILL_MODS]
+    return significant, dominant_combo
+
+
+def _reverse_mod_params(ar_adj, bpm_adj, sr_adj, dominant_combo):
+    """
+    Given mod-ADJUSTED AR/BPM/SR values (as stored in the taste vector) and the
+    dominant mod combo used to produce them, return the equivalent BASE map stats.
+
+    This is used so nerinyan/osu! searches are issued in base-stat space — the
+    space the API actually indexes — rather than in the player's experienced space.
+
+    Example: a DT player's taste vector may encode AR 10.5 and BPM 270.
+    Reversing DT gives AR ~9 and BPM 180, which is what we actually want to
+    search for.
+    """
+    ar  = float(ar_adj)
+    bpm = float(bpm_adj)
+    sr  = float(sr_adj)
+    acronyms = {a.upper() for a in dominant_combo}
+
+    # Reverse DT / NC  (speed ×1.5)
+    if "DT" in acronyms or "NC" in acronyms:
+        bpm = bpm / 1.5
+        ar  = _ms_to_ar(_ar_to_ms(ar) * 1.5)   # undo the preempt compression
+        sr  = sr / 1.35
+
+    # Reverse HT  (speed ×0.75)
+    if "HT" in acronyms:
+        bpm = bpm / 0.75
+        ar  = _ms_to_ar(_ar_to_ms(ar) * 0.75)
+        sr  = sr / 0.88
+
+    # Reverse HR  (AR ×1.4)
+    if "HR" in acronyms:
+        ar = ar / 1.4
+
+    # Reverse EZ  (AR ×0.5)
+    if "EZ" in acronyms:
+        ar = ar / 0.5
+
+    return max(ar, 0.0), max(bpm, 1.0), max(sr, 0.5)
+
+
 def _build_user_context(plays, top_n=20):
     """
     Return (taste_vec, mapper_weights, tag_weights, type_weights) from top plays.
@@ -562,15 +653,22 @@ def _build_user_context(plays, top_n=20):
     return taste_vec, _normalise(mapper_raw), {}, _normalise(type_raw)
 
 
-def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w, pp_target=None):
+def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
+              pp_target=None, preferred_mods=None):
     """
     Score a candidate map (higher = better match). Returns (score, reason_str).
 
-    Optional pp_target: the PP value the player would need to beat to improve
-    their profile.  When provided, maps estimated to be in that farmable range
-    receive a bonus.
+    preferred_mods  — list of mod acronym strings (e.g. ["DT", "HR"]).  When
+                      provided the candidate map's feature vector is computed
+                      *with those mods applied*, placing it in the same
+                      experiential space as the taste vector (which was built
+                      from mod-adjusted plays).  This is critical for DT/HR
+                      players — without it, cosine similarity is distorted.
+
+    pp_target       — PP value the player needs to beat to improve their profile.
     """
-    vec      = _bm_to_vec(bm, bms) * _FEAT_W
+    # Compute candidate vector in the same mod space as the taste vector.
+    vec      = _bm_to_vec(bm, bms, preferred_mods or []) * _FEAT_W
     tvec     = taste_vec * _FEAT_W
     cos_sim  = _cosine(vec, tvec)          # 0-1
     score    = cos_sim * 100               # base 0-100
@@ -652,6 +750,20 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w, pp_target=None):
         except Exception:
             pass
 
+    # ── Mod compatibility note ───────────────
+    # If the player has a dominant mod combo, note when the map pairs especially
+    # well with it (e.g. DT on an AR9 map lifts it to the player's preferred AR).
+    if preferred_mods:
+        acronyms = {a.upper() for a in preferred_mods}
+        ar_base  = float(bm.get("ar", 0))
+        bpm_base = float(bm.get("bpm") or bms.get("bpm") or 0)
+        if ("DT" in acronyms or "NC" in acronyms):
+            ar_dt = _ms_to_ar(_ar_to_ms(ar_base) / 1.5)
+            if 9.5 <= ar_dt <= 11.0:
+                reasons.append(f"great DT AR ({ar_dt:.1f} with DT)")
+        if "HR" in acronyms and ar_base <= 9.0:
+            reasons.append("suitable base AR for HR")
+
     # ── Minimum quality filter ───────────────
     # Maps with very few plays are likely obscure or low-effort; dampen them.
     playcount = int(bm.get("playcount") or 0)
@@ -719,7 +831,7 @@ def _pack_bm(bm, bms):
 
 def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
                     rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180,
-                    search_tags=None, pp_target=None):
+                    search_tags=None, pp_target=None, preferred_mods=None):
     # Build the base query; wider windows give more candidates for the scorer to
     # rank rather than returning too few results because the range is too tight.
     params = {
@@ -766,11 +878,15 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
             if bm.get("id") in played_bm_ids: continue
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", bpm_center)
             score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
-                                      pp_target=pp_target)
+                                      pp_target=pp_target,
+                                      preferred_mods=preferred_mods)
             results.append({
-                "beatmapset": _pack_bms(bms),
-                "beatmap":    _pack_bm(bm, bms),
-                "score": score, "reason": reason, "source": "nerinyan",
+                "beatmapset":   _pack_bms(bms),
+                "beatmap":      _pack_bm(bm, bms),
+                "score":        score,
+                "reason":       reason,
+                "source":       "nerinyan",
+                "suggested_mods": preferred_mods or [],
             })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -783,7 +899,7 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
 
 
 def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
-                      rec_count=8, sr_center=5.0, pp_target=None):
+                      rec_count=8, sr_center=5.0, pp_target=None, preferred_mods=None):
     """
     Fallback search via the osu! API.  Uses the player's dominant map type
     as the search keyword so the results are style-relevant, not just popular.
@@ -813,11 +929,15 @@ def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
             if abs(bm.get("difficulty_rating",0) - sr_center) > 1.5: continue
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", 180)
             score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
-                                      pp_target=pp_target)
+                                      pp_target=pp_target,
+                                      preferred_mods=preferred_mods)
             results.append({
-                "beatmapset": _pack_bms(bms),
-                "beatmap":    _pack_bm(bm, bms),
-                "score": score, "reason": reason, "source": "osu",
+                "beatmapset":   _pack_bms(bms),
+                "beatmap":      _pack_bm(bm, bms),
+                "score":        score,
+                "reason":       reason,
+                "source":       "osu",
+                "suggested_mods": preferred_mods or [],
             })
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:rec_count]
@@ -884,9 +1004,17 @@ def get_recommendations_for_profile(top_plays, cfg):
     if taste_vec is None:
         return []
 
-    sr_c  = float(taste_vec[0] * 10)
-    ar_c  = float(taste_vec[1] * 11)
-    bpm_c = float(taste_vec[4] * 400)
+    # ── Mod detection ────────────────────────────────────────────────────────
+    # Find which skill mods (DT/HR/etc.) this player uses most heavily and
+    # reverse their effect to get BASE map stats for nerinyan queries.
+    # The taste vector was built in mod-adjusted space; nerinyan indexes base stats.
+    _, dominant_combo = _detect_preferred_mods(top_plays, top_n)
+
+    sr_adj  = float(taste_vec[0] * 10)
+    ar_adj  = float(taste_vec[1] * 11)
+    bpm_adj = float(taste_vec[4] * 400)
+
+    ar_c, bpm_c, sr_c = _reverse_mod_params(ar_adj, bpm_adj, sr_adj, dominant_combo)
 
     # PP threshold: the PP of the player's weakest top-100 play.  Any map that
     # scores above this threshold (if the player FCed it) would push their total.
@@ -897,20 +1025,19 @@ def get_recommendations_for_profile(top_plays, cfg):
     search_tags = _top_beatmap_tags(top_plays, n=5, top_n=top_n) or None
 
     # ── Multi-pass: comfort / current / challenge ─────────────────────────────
-    # Three queries at staggered SR centres give a more diverse difficulty spread
-    # rather than everything clustering at the user's exact average.
     all_recs = []
     seen_ids = set()
-    for sr_offset, band_count in [(-0.5, rec_count), (0.0, rec_count), (0.7, rec_count)]:
+    for sr_offset in (-0.5, 0.0, 0.7):
         sr_band = sr_c + sr_offset
         if sr_band < 1.0:
             continue
         band_recs = _query_nerinyan(
             taste_vec, mapper_w, tag_w, type_w,
-            played_bm_ids, played_bms_ids, band_count,
+            played_bm_ids, played_bms_ids, rec_count,
             sr_band, ar_c, bpm_c,
             search_tags=search_tags,
             pp_target=pp_target,
+            preferred_mods=dominant_combo,
         )
         for r in band_recs:
             bid = r["beatmapset"]["id"]
@@ -918,7 +1045,6 @@ def get_recommendations_for_profile(top_plays, cfg):
                 seen_ids.add(bid)
                 all_recs.append(r)
 
-    # Sort the merged pool by score, then diversify
     all_recs.sort(key=lambda x: x["score"], reverse=True)
 
     if len(all_recs) < rec_count // 2:
@@ -926,6 +1052,7 @@ def get_recommendations_for_profile(top_plays, cfg):
             taste_vec, mapper_w, tag_w, type_w,
             played_bms_ids, rec_count - len(all_recs), sr_c,
             pp_target=pp_target,
+            preferred_mods=dominant_combo,
         )
         for r in fallback:
             if r["beatmapset"]["id"] not in seen_ids:
@@ -941,11 +1068,21 @@ def get_recommendations_for_play(play, top_plays, cfg):
     played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in top_plays if p.get("beatmap")}
 
     taste_vec, mapper_w, tag_w, type_w = _build_target_context(play)
-    bm  = play.get("beatmap", {})
-    bms = play.get("beatmapset", {})
-    sr_c  = float(bm.get("difficulty_rating", 5))
-    ar_c  = float(bm.get("ar", 9))
-    bpm_c = float(bm.get("bpm") or bms.get("bpm") or 180)
+    bm   = play.get("beatmap", {})
+    bms  = play.get("beatmapset", {})
+    mods = play.get("mods", [])
+
+    # The play's mods are the preferred mods for single-play recommendations.
+    play_mods    = [a for a in _normalise_acronyms(mods) if a in _SKILL_MODS]
+    # Reverse mod adjustments so nerinyan gets base stats to search against.
+    ar_adj  = float(bm.get("ar", 9))
+    bpm_adj = float(bm.get("bpm") or bms.get("bpm") or 180)
+    sr_adj  = float(bm.get("difficulty_rating", 5))
+    # The taste vector for a single play IS the mod-adjusted version; the raw
+    # bm stats are the BASE stats, so we use those directly for search center.
+    ar_c  = ar_adj
+    bpm_c = bpm_adj
+    sr_c  = sr_adj
 
     # Use the source beatmap's own tags to guide the nerinyan search.
     _NOISE = {"the","and","for","feat","ver","mix","short","full","long","remix","edit"}
@@ -955,12 +1092,15 @@ def get_recommendations_for_play(play, top_plays, cfg):
 
     recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
                            played_bm_ids, played_bms_ids, rec_count,
-                           sr_c, ar_c, bpm_c, search_tags=search_tags)
+                           sr_c, ar_c, bpm_c,
+                           search_tags=search_tags,
+                           preferred_mods=play_mods)
 
     if len(recs) < rec_count // 2:
         seen_ids = {r["beatmapset"]["id"] for r in recs}
         fallback = _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
-                                     played_bms_ids, rec_count - len(recs), sr_c)
+                                     played_bms_ids, rec_count - len(recs), sr_c,
+                                     preferred_mods=play_mods)
         for r in fallback:
             if r["beatmapset"]["id"] not in seen_ids:
                 recs.append(r)
