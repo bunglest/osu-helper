@@ -9,10 +9,12 @@
 let topPlays      = [];
 let currentRecs   = [];
 let recMode       = 'profile';
+let activeCat     = 'all';       // active category filter
 let sseSource     = null;
 let meData        = null;       // result of /api/me
 let allProfiles   = [];         // local mode only
 let activeProfileId = null;
+let selectedMods  = [];         // mods chosen in settings UI
 
 const OAUTH_MODE = window.OAUTH_MODE === true;
 
@@ -297,11 +299,48 @@ function populateSettings(me) {
   document.getElementById('settings-poll-interval').value = me.poll_interval || 30;
   document.getElementById('settings-rec-count').value    = me.rec_count      || 12;
 
+  // Rec preferences
+  const srMin = me.sr_min != null ? me.sr_min : '';
+  const srMax = me.sr_max != null ? me.sr_max : '';
+  document.getElementById('settings-sr-min').value = srMin;
+  document.getElementById('settings-sr-max').value = srMax;
+  const useRecent = me.use_recent_plays !== false;
+  document.getElementById('settings-use-recent').checked = useRecent;
+
+  // Mod toggles
+  selectedMods = Array.isArray(me.preferred_mods) ? [...me.preferred_mods] : [];
+  syncModToggles();
+
   if (OAUTH_MODE) {
     document.getElementById('oauth-info-card').classList.remove('hidden');
     document.getElementById('poll-interval-group').classList.add('hidden');
   }
 }
+
+function syncModToggles() {
+  document.querySelectorAll('.mod-toggle').forEach(btn => {
+    const mod = btn.dataset.mod;
+    const active = mod === 'NM'
+      ? selectedMods.length === 0
+      : selectedMods.includes(mod);
+    btn.classList.toggle('active', active);
+  });
+}
+
+// Wire mod toggle clicks
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.mod-toggle');
+  if (!btn) return;
+  const mod = btn.dataset.mod;
+  if (mod === 'NM') {
+    selectedMods = [];
+  } else {
+    const idx = selectedMods.indexOf(mod);
+    if (idx >= 0) selectedMods.splice(idx, 1);
+    else selectedMods.push(mod);
+  }
+  syncModToggles();
+});
 
 async function saveSettings() {
   const body = {
@@ -320,6 +359,29 @@ async function saveSettings() {
     toast('Settings saved', 'ok');
   } else {
     toast('Failed to save settings', 'err');
+  }
+}
+
+async function saveRecPrefs() {
+  const srMinVal = document.getElementById('settings-sr-min').value.trim();
+  const srMaxVal = document.getElementById('settings-sr-max').value.trim();
+  const body = {
+    preferred_mods:   selectedMods,
+    sr_min:           srMinVal !== '' ? parseFloat(srMinVal) : null,
+    sr_max:           srMaxVal !== '' ? parseFloat(srMaxVal) : null,
+    use_recent_plays: document.getElementById('settings-use-recent').checked,
+  };
+  const r = await fetch('/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) {
+    const ok = document.getElementById('recprefs-save-ok');
+    ok.classList.remove('hidden');
+    setTimeout(() => ok.classList.add('hidden'), 2000);
+    toast('Preferences saved', 'ok');
+  } else {
+    toast('Failed to save preferences', 'err');
   }
 }
 
@@ -520,24 +582,74 @@ function showRecsLoading() {
   document.getElementById('recs-loading').classList.remove('hidden');
   document.getElementById('recs-error').classList.add('hidden');
   document.getElementById('recs-grid').classList.add('hidden');
+  document.getElementById('recs-empty-cat')?.classList.add('hidden');
 }
 function showRecsError(msg) {
   document.getElementById('recs-loading').classList.add('hidden');
   document.getElementById('recs-error').classList.remove('hidden');
   document.getElementById('recs-grid').classList.add('hidden');
+  document.getElementById('recs-empty-cat')?.classList.add('hidden');
   document.getElementById('recs-error-msg').textContent = msg;
 }
 
 function renderRecs(recs) {
   document.getElementById('recs-loading').classList.add('hidden');
   document.getElementById('recs-error').classList.add('hidden');
+  const emptyCat = document.getElementById('recs-empty-cat');
   const grid = document.getElementById('recs-grid');
-  grid.classList.remove('hidden');
+
+  const filtered = activeCat === 'all'
+    ? recs
+    : recs.filter(r => (r.category || 'best_match') === activeCat);
+
   if (!recs.length) {
+    grid.classList.remove('hidden');
+    emptyCat?.classList.add('hidden');
     grid.innerHTML = `<div class="loading-state"><div class="error-icon">🔍</div><p>No recommendations found — try refreshing.</p></div>`;
     return;
   }
-  grid.innerHTML = recs.map(buildRecCard).join('');
+  if (!filtered.length) {
+    grid.classList.add('hidden');
+    if (emptyCat) {
+      emptyCat.classList.remove('hidden');
+      emptyCat.textContent = 'No recommendations in this category yet.';
+    }
+    return;
+  }
+  emptyCat?.classList.add('hidden');
+  grid.classList.remove('hidden');
+  grid.innerHTML = filtered.map(buildRecCard).join('');
+}
+
+// ─── Category tabs ────────────────────────────
+document.addEventListener('click', e => {
+  const tab = e.target.closest('.cat-tab');
+  if (!tab) return;
+  activeCat = tab.dataset.cat;
+  document.querySelectorAll('.cat-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.cat === activeCat));
+  renderRecs(currentRecs);
+});
+
+// ─── Dismiss ──────────────────────────────────
+async function dismissRec(bmsId, cardEl) {
+  try {
+    await fetch('/api/dismissed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ beatmapset_id: bmsId }),
+    });
+    // Remove from local state
+    currentRecs = currentRecs.filter(r => (r.beatmapset || {}).id !== bmsId);
+    // Animate card out
+    if (cardEl) {
+      cardEl.classList.add('dismissing');
+      setTimeout(() => { cardEl.remove(); }, 300);
+    }
+    toast('Map dismissed', 'info');
+  } catch (e) {
+    toast('Could not dismiss map', 'err');
+  }
 }
 
 function buildRecCard(rec) {
@@ -559,7 +671,21 @@ function buildRecCard(rec) {
   const dlUrl  = `https://api.nerinyan.moe/d/${bmsId}`;
   const viewUrl = bm.url || `https://osu.ppy.sh/b/${bmId}`;
 
-  return `<div class="rec-card">
+  // Suggested mod badges
+  const suggestedMods = Array.isArray(rec.suggested_mods) ? rec.suggested_mods : [];
+  const modBadges = suggestedMods.length
+    ? `<div class="rec-mods">${suggestedMods.map(m =>
+        `<span class="rec-mod-badge mod-${m}">${m}</span>`).join('')}</div>`
+    : '';
+
+  // Category label
+  const catLabels = { best_match:'Best Match', pp_farm:'PP Farm', comfort:'Comfort',
+                      challenge:'Challenge', just_ranked:'Just Ranked' };
+  const catLabel = catLabels[rec.category] || '';
+  const catBadge = catLabel
+    ? `<span class="cat-badge cat-${rec.category}">${catLabel}</span>` : '';
+
+  return `<div class="rec-card" data-bmsid="${bmsId}">
   <div class="rec-cover">
     <img src="${cover}" alt="" loading="lazy" onerror="this.style.opacity=0">
     <div class="rec-cover-overlay"></div>
@@ -567,7 +693,10 @@ function buildRecCard(rec) {
     <div class="rec-stars ${starClass}">★ ${sr}</div>
   </div>
   <div class="rec-body">
-    <div class="rec-title">${esc(bms.title || '?')} <span class="rec-version">— ${esc(bm.version || '?')}</span></div>
+    <div class="rec-title-row">
+      <div class="rec-title">${esc(bms.title || '?')} <span class="rec-version">— ${esc(bm.version || '?')}</span></div>
+      ${catBadge}
+    </div>
     <div class="rec-mapper">${esc(bms.artist || '')} · mapped by ${esc(bms.creator || '?')}</div>
     <div class="rec-attrs">
       ${ar     ? `<span class="attr-chip ar">${ar}</span>` : ''}
@@ -575,6 +704,7 @@ function buildRecCard(rec) {
       ${bpmStr ? `<span class="attr-chip bpm">${bpmStr}</span>` : ''}
       ${length ? `<span class="attr-chip">${length}</span>` : ''}
     </div>
+    ${modBadges}
     ${renderTypeBadges(bm.map_types)}
     ${rec.reason ? `<div class="rec-reason">💡 ${esc(rec.reason)}</div>` : ''}
   </div>
@@ -582,8 +712,14 @@ function buildRecCard(rec) {
     <a href="${viewUrl}" target="_blank" class="btn-outline">View</a>
     <a href="${dlUrl}" target="_blank" class="btn-outline btn-dl">Download</a>
     <a href="osu://b/${bmId}" class="btn-outline" title="Open in osu!">▶ Play</a>
+    <button class="btn-dismiss" onclick="dismissRecById(${bmsId}, this)" title="Not interested">✕ Not interested</button>
   </div>
 </div>`;
+}
+
+function dismissRecById(bmsId, el) {
+  const card = el?.closest('.rec-card');
+  dismissRec(bmsId, card);
 }
 
 // ─── SSE ────────────────────────────────────
@@ -693,6 +829,7 @@ window.loadRecommendations           = loadRecommendations;
 window.loadRecsForPlay               = loadRecsForPlay;
 window.switchRecMode                 = switchRecMode;
 window.saveSettings                  = saveSettings;
+window.saveRecPrefs                  = saveRecPrefs;
 window.testCredentials               = testCredentials;
 window.saveActiveProfileCredentials  = saveActiveProfileCredentials;
 window.toggleProfileMenu             = toggleProfileMenu;
@@ -701,3 +838,4 @@ window.deleteProfile                 = deleteProfile;
 window.openAddProfile                = openAddProfile;
 window.closeAddProfile               = closeAddProfile;
 window.submitAddProfile              = submitAddProfile;
+window.dismissRecById                = dismissRecById;

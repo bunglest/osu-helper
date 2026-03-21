@@ -47,6 +47,7 @@ app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
 CONFIG_FILE     = os.path.join(DATA_DIR, "config.json")
 PROFILES_FILE   = os.path.join(DATA_DIR, "profiles.json")
+DISMISSED_FILE  = os.path.join(DATA_DIR, "dismissed.json")
 OSU_API_BASE    = "https://osu.ppy.sh/api/v2"
 OSU_TOKEN_URL   = "https://osu.ppy.sh/oauth/token"
 OSU_AUTH_URL    = "https://osu.ppy.sh/oauth/authorize"
@@ -69,9 +70,13 @@ app.config.update(
 # ─────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
-    "top_n": 20,
-    "poll_interval": 30,
-    "rec_count": 12,
+    "top_n":            20,
+    "poll_interval":    30,
+    "rec_count":        12,
+    "sr_min":           None,   # hard floor on recommended difficulty (None = no limit)
+    "sr_max":           None,   # hard ceiling on recommended difficulty (None = no limit)
+    "preferred_mods":   [],     # [] = auto-detect from top plays; e.g. ["DT"] to override
+    "use_recent_plays": True,   # blend recent activity into the taste profile
 }
 
 
@@ -262,6 +267,31 @@ def get_user_id(username):
 def fetch_top_plays(username, limit=100):
     uid = get_user_id(username)
     return osu_get(f"/users/{uid}/scores/best", {"mode": "osu", "limit": limit})
+
+
+def fetch_recent_plays(username, limit=30):
+    """Fetch the player's most recent submitted plays (passes only)."""
+    uid = get_user_id(username)
+    return osu_get(f"/users/{uid}/scores/recent",
+                   {"mode": "osu", "limit": limit, "include_fails": "0"})
+
+
+# ── Dismissed beatmapset persistence ─────────────────────────────────────────
+
+def load_dismissed():
+    """Return the set of beatmapset IDs the player has dismissed."""
+    if os.path.exists(DISMISSED_FILE):
+        try:
+            with open(DISMISSED_FILE) as f:
+                return set(int(x) for x in json.load(f))
+        except Exception:
+            pass
+    return set()
+
+
+def save_dismissed(ids: set):
+    with open(DISMISSED_FILE, "w") as f:
+        json.dump(sorted(ids), f)
 
 
 def current_username():
@@ -831,12 +861,17 @@ def _pack_bm(bm, bms):
 
 def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
                     rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180,
-                    search_tags=None, pp_target=None, preferred_mods=None):
+                    search_tags=None, pp_target=None, preferred_mods=None,
+                    sr_min=None, sr_max=None):
     # Build the base query; wider windows give more candidates for the scorer to
     # rank rather than returning too few results because the range is too tight.
+    diff_lo = max(sr_center - 1.3, sr_min if sr_min is not None else 0)
+    diff_hi = min(sr_center + 1.3, sr_max if sr_max is not None else 99)
+    if diff_lo >= diff_hi:   # config limits make this band impossible — skip
+        return []
     params = {
         "m": 0, "r": "1,2,4",
-        "diff": f"{max(0, sr_center-1.3):.1f}-{sr_center+1.3:.1f}",
+        "diff": f"{diff_lo:.1f}-{diff_hi:.1f}",
         "ar":   f"{max(0, ar_center-1.5):.1f}-{min(11, ar_center+1.5):.1f}",
         "bpm":  f"{bpm_center*0.75:.0f}-{bpm_center*1.25:.0f}",
         "p": 0, "ps": 100,
@@ -994,21 +1029,67 @@ def _top_beatmap_tags(plays, n=5, top_n=20):
     return frequent[:n]
 
 
-def get_recommendations_for_profile(top_plays, cfg):
+def _assign_category(r, sr_c):
+    """
+    Assign a recommendation category based on SR offset and reason text.
+    Categories: 'best_match' | 'pp_farm' | 'comfort' | 'challenge' | 'just_ranked'
+    """
+    sr = (r.get("beatmap") or {}).get("difficulty_rating", sr_c)
+    reason = (r.get("reason") or "").lower()
+    ranked_str = (r.get("beatmapset") or {}).get("ranked_date") or ""
+    try:
+        ranked_days = (datetime.now(timezone.utc) - datetime.fromisoformat(
+            ranked_str.replace("Z", "+00:00"))).days
+    except Exception:
+        ranked_days = 9999
+    if ranked_days < 60:
+        return "just_ranked"
+    if "pp" in reason and sr >= sr_c:
+        return "pp_farm"
+    if sr < sr_c - 0.3:
+        return "comfort"
+    if sr > sr_c + 0.4:
+        return "challenge"
+    return "best_match"
+
+
+def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
     top_n     = cfg.get("top_n", 20)
     rec_count = cfg.get("rec_count", 12)
+    sr_min    = cfg.get("sr_min")   # None or float
+    sr_max    = cfg.get("sr_max")   # None or float
+    # Manual mod override: if non-empty, use instead of auto-detected combo
+    manual_mods = cfg.get("preferred_mods") or []
+
     played_bm_ids  = {p["beatmap"]["id"] for p in top_plays if p.get("beatmap")}
     played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in top_plays if p.get("beatmap")}
 
-    taste_vec, mapper_w, tag_w, type_w = _build_user_context(top_plays, top_n)
+    # ── Recent plays context blending ────────────────────────────────────────
+    # Blend recent plays into the working play list (deduplicated) so that
+    # whatever the player has been doing lately also influences the taste vector.
+    if recent_plays and cfg.get("use_recent_plays", True):
+        recent_bm_ids = {p["beatmap"]["id"] for p in recent_plays if p.get("beatmap")}
+        played_bm_ids |= recent_bm_ids
+        played_bms_ids |= {p["beatmap"]["beatmapset_id"]
+                           for p in recent_plays if p.get("beatmap")}
+        # Append recent plays that aren't already in top_plays (avoid duplicates
+        # by best_id so the same play isn't counted twice)
+        top_best_ids = {p.get("best_id") for p in top_plays}
+        extra = [p for p in recent_plays if p.get("best_id") not in top_best_ids]
+        blended_plays = top_plays + extra
+    else:
+        blended_plays = top_plays
+
+    taste_vec, mapper_w, tag_w, type_w = _build_user_context(blended_plays, top_n)
     if taste_vec is None:
         return []
 
-    # ── Mod detection ────────────────────────────────────────────────────────
-    # Find which skill mods (DT/HR/etc.) this player uses most heavily and
-    # reverse their effect to get BASE map stats for nerinyan queries.
-    # The taste vector was built in mod-adjusted space; nerinyan indexes base stats.
-    _, dominant_combo = _detect_preferred_mods(top_plays, top_n)
+    # ── Mod detection / override ──────────────────────────────────────────────
+    # If the user has set a manual mod override use that; otherwise auto-detect.
+    if manual_mods:
+        dominant_combo = [m for m in _normalise_acronyms(manual_mods) if m in _SKILL_MODS]
+    else:
+        _, dominant_combo = _detect_preferred_mods(top_plays, top_n)
 
     sr_adj  = float(taste_vec[0] * 10)
     ar_adj  = float(taste_vec[1] * 11)
@@ -1016,13 +1097,21 @@ def get_recommendations_for_profile(top_plays, cfg):
 
     ar_c, bpm_c, sr_c = _reverse_mod_params(ar_adj, bpm_adj, sr_adj, dominant_combo)
 
-    # PP threshold: the PP of the player's weakest top-100 play.  Any map that
-    # scores above this threshold (if the player FCed it) would push their total.
+    # Apply hard SR clamp from user config
+    if sr_min is not None:
+        sr_c = max(sr_c, float(sr_min))
+    if sr_max is not None:
+        sr_c = min(sr_c, float(sr_max))
+
+    # PP threshold: the PP of the player's weakest top-100 play.
     pps = sorted([float(p.get("pp") or 0) for p in top_plays if p.get("pp")], reverse=True)
     pp_target = pps[min(len(pps) - 1, 99)] if pps else None
 
     # Recurring beatmap tags used as a nerinyan search hint
     search_tags = _top_beatmap_tags(top_plays, n=5, top_n=top_n) or None
+
+    # ── Load dismissed beatmapset IDs ─────────────────────────────────────────
+    dismissed_ids = load_dismissed()
 
     # ── Multi-pass: comfort / current / challenge ─────────────────────────────
     all_recs = []
@@ -1038,11 +1127,14 @@ def get_recommendations_for_profile(top_plays, cfg):
             search_tags=search_tags,
             pp_target=pp_target,
             preferred_mods=dominant_combo,
+            sr_min=sr_min,
+            sr_max=sr_max,
         )
         for r in band_recs:
             bid = r["beatmapset"]["id"]
-            if bid not in seen_ids:
+            if bid not in seen_ids and bid not in dismissed_ids:
                 seen_ids.add(bid)
+                r["category"] = _assign_category(r, sr_c)
                 all_recs.append(r)
 
     all_recs.sort(key=lambda x: x["score"], reverse=True)
@@ -1055,8 +1147,10 @@ def get_recommendations_for_profile(top_plays, cfg):
             preferred_mods=dominant_combo,
         )
         for r in fallback:
-            if r["beatmapset"]["id"] not in seen_ids:
-                seen_ids.add(r["beatmapset"]["id"])
+            bid = r["beatmapset"]["id"]
+            if bid not in seen_ids and bid not in dismissed_ids:
+                seen_ids.add(bid)
+                r["category"] = _assign_category(r, sr_c)
                 all_recs.append(r)
 
     return _diversify(all_recs, rec_count)
@@ -1090,11 +1184,16 @@ def get_recommendations_for_play(play, top_plays, cfg):
                 if len(t) > 3 and t not in _NOISE]
     search_tags = raw_tags[:5] if raw_tags else None
 
+    dismissed_ids = load_dismissed()
+
     recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
                            played_bm_ids, played_bms_ids, rec_count,
                            sr_c, ar_c, bpm_c,
                            search_tags=search_tags,
                            preferred_mods=play_mods)
+    recs = [r for r in recs if r["beatmapset"]["id"] not in dismissed_ids]
+    for r in recs:
+        r.setdefault("category", "best_match")
 
     if len(recs) < rec_count // 2:
         seen_ids = {r["beatmapset"]["id"] for r in recs}
@@ -1102,7 +1201,9 @@ def get_recommendations_for_play(play, top_plays, cfg):
                                      played_bms_ids, rec_count - len(recs), sr_c,
                                      preferred_mods=play_mods)
         for r in fallback:
-            if r["beatmapset"]["id"] not in seen_ids:
+            bid = r["beatmapset"]["id"]
+            if bid not in seen_ids and bid not in dismissed_ids:
+                r.setdefault("category", "best_match")
                 recs.append(r)
 
     return _diversify(recs, rec_count)
@@ -1371,10 +1472,16 @@ def index():
 @app.route("/api/me")
 def api_me():
     """Returns the current user's identity (both modes)."""
+    cfg = load_config()
+    extra = {
+        "sr_min":           cfg.get("sr_min"),
+        "sr_max":           cfg.get("sr_max"),
+        "preferred_mods":   cfg.get("preferred_mods", []),
+        "use_recent_plays": cfg.get("use_recent_plays", True),
+    }
     if OAUTH_MODE:
         if "osu_username" not in session:
             return jsonify({"logged_in": False, "oauth_mode": True})
-        cfg = load_config()
         return jsonify({
             "logged_in":     True,
             "oauth_mode":    True,
@@ -1386,10 +1493,10 @@ def api_me():
             "top_n":         cfg.get("top_n", 20),
             "poll_interval": cfg.get("poll_interval", 30),
             "rec_count":     cfg.get("rec_count", 12),
+            **extra,
         })
     else:
         p = get_active_profile()
-        cfg = load_config()
         return jsonify({
             "logged_in":   bool(p.get("username")),
             "oauth_mode":  False,
@@ -1403,17 +1510,30 @@ def api_me():
             "poll_interval": cfg.get("poll_interval", 30),
             "rec_count":   cfg.get("rec_count", 12),
             "has_credentials": bool(p.get("client_id") and p.get("client_secret")),
+            **extra,
         })
 
 
 @app.route("/api/config", methods=["POST"])
 def api_config_post():
-    """Save global settings (top_n, poll_interval, rec_count)."""
+    """Save global settings."""
     body = request.get_json(force=True)
     cfg  = load_config()
     for key in ("top_n", "poll_interval", "rec_count"):
         if key in body:
             cfg[key] = body[key]
+    # New user-control fields
+    if "sr_min" in body:
+        v = body["sr_min"]
+        cfg["sr_min"] = float(v) if v not in (None, "", "null") else None
+    if "sr_max" in body:
+        v = body["sr_max"]
+        cfg["sr_max"] = float(v) if v not in (None, "", "null") else None
+    if "preferred_mods" in body:
+        mods = body["preferred_mods"]
+        cfg["preferred_mods"] = [m for m in (_normalise_acronyms(mods) if isinstance(mods, list) else []) if m in _SKILL_MODS]
+    if "use_recent_plays" in body:
+        cfg["use_recent_plays"] = bool(body["use_recent_plays"])
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -1514,10 +1634,53 @@ def api_recommendations():
         if not plays:
             plays = fetch_top_plays(username, 100)
             _set_user_plays(username, plays)
-        recs = get_recommendations_for_profile(plays, cfg)
+        # Optionally blend recent plays for fresh context
+        recent_plays = None
+        if cfg.get("use_recent_plays", True):
+            try:
+                recent_plays = fetch_recent_plays(username, limit=30)
+            except Exception:
+                recent_plays = None
+        recs = get_recommendations_for_profile(plays, cfg, recent_plays=recent_plays)
         return jsonify({"recommendations": recs})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# Dismissed beatmapsets API
+# ─────────────────────────────────────────────
+
+@app.route("/api/dismissed", methods=["GET"])
+def api_dismissed_get():
+    """Return the list of dismissed beatmapset IDs."""
+    return jsonify({"dismissed": sorted(load_dismissed())})
+
+
+@app.route("/api/dismissed", methods=["POST"])
+def api_dismissed_post():
+    """Add a beatmapset to the dismissed list. Body: {beatmapset_id: N}"""
+    body = request.get_json(force=True)
+    bms_id = body.get("beatmapset_id")
+    if bms_id is None:
+        return jsonify({"error": "beatmapset_id required"}), 400
+    try:
+        bms_id = int(bms_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "beatmapset_id must be integer"}), 400
+    ids = load_dismissed()
+    ids.add(bms_id)
+    save_dismissed(ids)
+    return jsonify({"ok": True, "dismissed_count": len(ids)})
+
+
+@app.route("/api/dismissed/<int:bms_id>", methods=["DELETE"])
+def api_dismissed_delete(bms_id):
+    """Remove a beatmapset from the dismissed list (un-dismiss)."""
+    ids = load_dismissed()
+    ids.discard(bms_id)
+    save_dismissed(ids)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/recommendations/for-play/<int:play_index>")

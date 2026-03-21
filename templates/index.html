@@ -203,8 +203,18 @@
         </button>
       </div>
     </div>
+    <!-- Category filter tabs -->
+    <div class="cat-tabs" id="cat-tabs">
+      <button class="cat-tab active" data-cat="all">All</button>
+      <button class="cat-tab" data-cat="best_match">Best Match</button>
+      <button class="cat-tab" data-cat="pp_farm">PP Farm</button>
+      <button class="cat-tab" data-cat="comfort">Comfort</button>
+      <button class="cat-tab" data-cat="challenge">Challenge</button>
+      <button class="cat-tab" data-cat="just_ranked">Just Ranked</button>
+    </div>
     <div id="recs-loading" class="loading-state"><div class="spinner-lg"></div><p>Generating recommendations…</p></div>
     <div id="recs-error" class="error-state hidden"><div class="error-icon">⚠️</div><p id="recs-error-msg">Could not load recommendations</p><button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">Retry</button></div>
+    <div id="recs-empty-cat" class="empty-cat hidden">No recommendations in this category yet.</div>
     <div id="recs-grid" class="recs-grid hidden"></div>
   </section>
 
@@ -275,6 +285,54 @@
         <div class="settings-actions">
           <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
           <span id="settings-save-ok" class="save-ok hidden">✓ Saved</span>
+        </div>
+      </div>
+
+      <!-- Recommendation preferences -->
+      <div class="settings-card">
+        <h3>Recommendation Preferences</h3>
+
+        <div class="form-group">
+          <label>Mod Override <span class="field-hint-inline">(leave blank to auto-detect from plays)</span></label>
+          <div class="mod-toggles" id="mod-toggles">
+            <button class="mod-toggle" data-mod="NM" title="No Mod">NM</button>
+            <button class="mod-toggle" data-mod="DT" title="Double Time">DT</button>
+            <button class="mod-toggle" data-mod="HR" title="Hard Rock">HR</button>
+            <button class="mod-toggle" data-mod="HD" title="Hidden">HD</button>
+            <button class="mod-toggle" data-mod="HT" title="Half Time">HT</button>
+            <button class="mod-toggle" data-mod="EZ" title="Easy">EZ</button>
+          </div>
+          <p class="field-hint">Selected mods will be applied when scoring and searching recommendations. NM = clear all.</p>
+        </div>
+
+        <div class="form-group">
+          <label>Difficulty Range</label>
+          <div class="sr-range-row">
+            <div class="input-with-unit">
+              <input id="settings-sr-min" type="number" min="0" max="20" step="0.1" placeholder="—" />
+              <span class="unit">★ floor</span>
+            </div>
+            <span class="sr-range-sep">to</span>
+            <div class="input-with-unit">
+              <input id="settings-sr-max" type="number" min="0" max="20" step="0.1" placeholder="—" />
+              <span class="unit">★ ceiling</span>
+            </div>
+          </div>
+          <p class="field-hint">Leave blank to use no hard limit. Maps outside this range are excluded from recommendations.</p>
+        </div>
+
+        <div class="form-group">
+          <label class="toggle-label">
+            <input type="checkbox" id="settings-use-recent" />
+            <span class="toggle-track"></span>
+            <span>Blend recent plays into taste profile</span>
+          </label>
+          <p class="field-hint">When enabled, your recent activity influences recommendations alongside your top plays.</p>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn btn-primary" onclick="saveRecPrefs()">Save Preferences</button>
+          <span id="recprefs-save-ok" class="save-ok hidden">✓ Saved</span>
         </div>
       </div>
 

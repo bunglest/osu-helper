@@ -955,6 +955,198 @@ a:hover { color: var(--pink-light); text-decoration: underline; }
   line-height: 1.5;
 }
 
+/* ── Category filter tabs ──────────────────── */
+.cat-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+}
+.cat-tab {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0.3rem 0.85rem;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+.cat-tab:hover {
+  border-color: var(--pink);
+  color: var(--text);
+}
+.cat-tab.active {
+  background: linear-gradient(135deg, var(--pink-dark), var(--purple-dark));
+  border-color: transparent;
+  color: #fff;
+}
+
+/* ── Category badge on rec cards ─────────── */
+.rec-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.cat-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+}
+.cat-best_match  { background: rgba(189,147,249,0.2); color: var(--purple); border: 1px solid var(--purple); }
+.cat-pp_farm     { background: rgba(255,184,108,0.2); color: var(--orange); border: 1px solid var(--orange); }
+.cat-comfort     { background: rgba(80,250,123,0.2);  color: var(--green);  border: 1px solid var(--green);  }
+.cat-challenge   { background: rgba(255,85,85,0.2);   color: var(--red);    border: 1px solid var(--red);    }
+.cat-just_ranked { background: rgba(255,102,170,0.2); color: var(--pink);   border: 1px solid var(--pink);   }
+
+/* ── Dismiss button ───────────────────────── */
+.btn-dismiss {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.73rem;
+  padding: 0.28rem 0.6rem;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+.btn-dismiss:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+.rec-card.dismissing {
+  opacity: 0;
+  transform: scale(0.95);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+/* ── Suggested mod badges on rec cards ──── */
+.rec-mods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.3rem 0;
+}
+.rec-mod-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(189,147,249,0.15);
+  border: 1px solid rgba(189,147,249,0.45);
+  color: var(--purple);
+}
+.rec-mod-badge.mod-DT { background: rgba(255,184,108,0.15); border-color: rgba(255,184,108,0.5); color: var(--orange); }
+.rec-mod-badge.mod-HR { background: rgba(255,85,85,0.15);   border-color: rgba(255,85,85,0.45);  color: var(--red); }
+.rec-mod-badge.mod-HD { background: rgba(241,250,140,0.15); border-color: rgba(241,250,140,0.4); color: var(--yellow); }
+.rec-mod-badge.mod-HT { background: rgba(80,250,123,0.15);  border-color: rgba(80,250,123,0.4);  color: var(--green); }
+.rec-mod-badge.mod-EZ { background: rgba(80,250,123,0.1);   border-color: rgba(80,250,123,0.3);  color: var(--green); }
+
+/* ── Empty-category placeholder ─────────── */
+.empty-cat {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 3rem 1rem;
+  font-size: 0.9rem;
+}
+
+/* ── Mod-toggle buttons in settings ──────── */
+.mod-toggles {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+.mod-toggle {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  min-width: 2.6rem;
+  padding: 0.3rem 0.6rem;
+  transition: var(--transition);
+}
+.mod-toggle:hover { border-color: var(--pink); color: var(--text); }
+.mod-toggle.active {
+  background: linear-gradient(135deg, var(--pink-dark), var(--purple-dark));
+  border-color: transparent;
+  color: #fff;
+}
+
+/* ── SR range row ──────────────────────── */
+.sr-range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.sr-range-sep {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+
+/* ── Toggle (checkbox) labels ─────────── */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.9rem;
+}
+.toggle-label input[type="checkbox"] {
+  display: none;
+}
+.toggle-track {
+  width: 40px;
+  height: 22px;
+  background: var(--bg4);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  position: relative;
+  transition: background var(--transition), border-color var(--transition);
+  flex-shrink: 0;
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform var(--transition), background var(--transition);
+}
+.toggle-label input:checked ~ .toggle-track {
+  background: linear-gradient(135deg, var(--pink-dark), var(--purple-dark));
+  border-color: transparent;
+}
+.toggle-label input:checked ~ .toggle-track::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+
+/* ── Inline hint in labels ─────────────── */
+.field-hint-inline {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 /* ── Responsive ─────────────────────────── */
 @media (max-width: 768px) {
   .header { padding: 0 1rem; }
