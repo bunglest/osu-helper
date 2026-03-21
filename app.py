@@ -288,7 +288,11 @@ MAP_TYPE_INFO = {
 
 
 def classify_map_type(bm, bms=None):
-    """Classify a beatmap into one or two type labels using attribute heuristics."""
+    """
+    Classify a beatmap into one or two type labels.
+    Uses attribute heuristics first, then cross-references mapper-supplied
+    beatmap tags to catch types the heuristic may miss (e.g. 'alt', 'tech').
+    """
     bms = bms or {}
     bpm     = float(bm.get("bpm") or bms.get("bpm") or 0)
     ar      = float(bm.get("ar") or 0)
@@ -319,6 +323,34 @@ def classify_map_type(bm, bms=None):
     # Speed: very fast BPM but not circle-dense enough to be full streams
     if bpm >= 220 and circ_r < 0.6 and "streams" not in types:
         types.append("speed")
+
+    # ── Tag-based supplement ──────────────────────────────────────────────────
+    # Mapper tags are the ground-truth labels for style; if a tag directly names
+    # a type and the heuristic missed it, inject it at the front of the list.
+    _TAG_TYPE_MAP = {
+        "stream":        "streams",
+        "streams":       "streams",
+        "streaming":     "streams",
+        "aim":           "aim",
+        "jump":          "aim",
+        "jumps":         "aim",
+        "tech":          "tech",
+        "technical":     "tech",
+        "farm":          "farm",
+        "farmable":      "farm",
+        "alt":           "finger control",
+        "alternate":     "finger control",
+        "alternating":   "finger control",
+        "speed":         "speed",
+        "reading":       "reading",
+        "lowAR":         "reading",
+    }
+    tags = set((bms.get("tags") or "").lower().split())
+    for tag in tags:
+        tag_type = _TAG_TYPE_MAP.get(tag)
+        if tag_type and tag_type not in types:
+            types.insert(0, tag_type)   # tag evidence is strong — push to front
+            break
 
     return types[:2] if types else ["misc"]
 
@@ -483,7 +515,7 @@ def _build_user_context(plays, top_n=20):
         return None, {}, {}, {}
 
     vecs, weights = [], []
-    mapper_raw, tag_raw, type_raw = {}, {}, {}
+    mapper_raw, type_raw = {}, {}
     now_ts = time.time()
 
     for play in slice_:
@@ -513,10 +545,6 @@ def _build_user_context(plays, top_n=20):
         if creator:
             mapper_raw[creator] = mapper_raw.get(creator, 0) + combined_w
 
-        for tag in (bms.get("tags") or "").lower().split():
-            if len(tag) > 2:
-                tag_raw[tag] = tag_raw.get(tag, 0) + combined_w
-
         for t in classify_map_type(bm, bms):
             type_raw[t] = type_raw.get(t, 0) + combined_w
 
@@ -529,11 +557,19 @@ def _build_user_context(plays, top_n=20):
         mx = max(d.values()) if d else 1
         return {k: v / mx for k, v in d.items()}
 
-    return taste_vec, _normalise(mapper_raw), _normalise(tag_raw), _normalise(type_raw)
+    # tag_w is intentionally empty — we match on beatmap tags at search time,
+    # not on accumulated user-history tags.
+    return taste_vec, _normalise(mapper_raw), {}, _normalise(type_raw)
 
 
-def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
-    """Score a candidate map (higher = better match). Returns (score, reason_str)."""
+def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w, pp_target=None):
+    """
+    Score a candidate map (higher = better match). Returns (score, reason_str).
+
+    Optional pp_target: the PP value the player would need to beat to improve
+    their profile.  When provided, maps estimated to be in that farmable range
+    receive a bonus.
+    """
     vec      = _bm_to_vec(bm, bms) * _FEAT_W
     tvec     = taste_vec * _FEAT_W
     cos_sim  = _cosine(vec, tvec)          # 0-1
@@ -560,39 +596,77 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w):
     if t_density > 1 and abs(density - t_density) / max(t_density, 1) < 0.2:
         reasons.append(f"similar note density ({density:.1f}/s)")
 
-    # ── Mapper bonus (max +12) ──────────────
+    # ── Mapper bonus (max +8) ───────────────
     creator = (bms.get("creator") or "").lower().strip()
     if creator and creator in mapper_w:
-        bonus = mapper_w[creator] * 12
+        bonus = mapper_w[creator] * 8
         score += bonus
         reasons.append(f"by a mapper you like ({bms.get('creator','')})")
 
-    # ── Tag overlap bonus (lightly weighted, max +5) ──
-    bm_tags = set((bms.get("tags") or "").lower().split())
-    if bm_tags and tag_w:
-        top_tags = set(sorted(tag_w, key=tag_w.get, reverse=True)[:30])
-        overlap  = len(bm_tags & top_tags)
-        if overlap:
-            score += min(overlap / max(len(top_tags), 1), 1.0) * 5
-
-    # ── Map-type preference bonus (max +8) ──
+    # ── Map-type preference bonus (max +20) ─
+    # Most reliable style signal — a stream player should always get stream maps.
     bm_types = classify_map_type(bm, bms)
     for t in bm_types:
         if t in type_w:
-            score += type_w[t] * 8
+            score += type_w[t] * 20
             break  # only count once
 
-    # ── Pass-rate penalty ────────────────────
-    # Avoids recommending maps that almost nobody clears unless the user
-    # specifically enjoys brutal maps.  Only applied when we have enough
-    # playcount data to trust the ratio (>= 200 attempts).
-    passcount = int(bm.get("passcount") or 0)
+    # ── Beatmap tag overlap bonus (max +10) ─
+    # Compares the candidate's tags against the target beatmap's tags.
+    # Only meaningful in single-play mode (tag_w is empty for profile recs).
+    bm_tags = set((bms.get("tags") or "").lower().split())
+    if bm_tags and tag_w:
+        target_tags = set(t for t in tag_w if len(t) > 3)
+        overlap = len(bm_tags & target_tags)
+        if overlap:
+            score += min(overlap / max(len(target_tags), 1), 1.0) * 10
+            reasons.append("matching map style tags")
+
+    # ── PP-improvement bonus (max +12) ──────
+    # Favour maps estimated to be in the player's farmable PP zone — i.e. the
+    # range where successfully playing a map would push their total PP up.
+    # The SR→PP formula below is a rough approximation; it's directionally
+    # correct for NM plays on maps in the 4–9★ range.
+    if pp_target is not None and pp_target > 0 and sr >= 2.0:
+        est_pp = 45.0 * (sr ** 2.6)   # order-of-magnitude estimate
+        ratio  = abs(est_pp - pp_target) / max(pp_target, 1)
+        if ratio < 0.20:
+            score += 12
+            reasons.append("great PP farm potential")
+        elif ratio < 0.40:
+            score += 6
+            reasons.append("decent PP farm potential")
+
+    # ── Recency bonus (max +6) ───────────────
+    # Slightly prefer maps that are freshly ranked so the list doesn't feel stale.
+    ranked_date = bms.get("ranked_date") or bms.get("submitted_date") or ""
+    if ranked_date:
+        try:
+            rd_ts    = datetime.fromisoformat(str(ranked_date).replace("Z", "+00:00")).timestamp()
+            days_old = max(0.0, (time.time() - rd_ts) / 86400)
+            if days_old < 365:          # ranked within a year
+                score += 6
+                reasons.append("recently ranked")
+            elif days_old < 548:        # ~18 months
+                score += 3
+        except Exception:
+            pass
+
+    # ── Minimum quality filter ───────────────
+    # Maps with very few plays are likely obscure or low-effort; dampen them.
     playcount = int(bm.get("playcount") or 0)
+    if playcount < 100:
+        score *= 0.60
+    elif playcount < 500:
+        score *= 0.85
+
+    # ── Pass-rate penalty ────────────────────
+    passcount = int(bm.get("passcount") or 0)
     if playcount >= 200:
         pass_rate = passcount / playcount
-        if pass_rate < 0.05:      # < 5 % — extremely brutal
+        if pass_rate < 0.05:      # < 5% — extremely brutal
             score *= 0.70
-        elif pass_rate < 0.15:    # 5–15 % — noticeably punishing
+        elif pass_rate < 0.15:    # 5–15% — noticeably punishing
             score *= 0.87
 
     if not reasons:
@@ -644,24 +718,46 @@ def _pack_bm(bm, bms):
 
 
 def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
-                    rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180):
+                    rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180,
+                    search_tags=None, pp_target=None):
+    # Build the base query; wider windows give more candidates for the scorer to
+    # rank rather than returning too few results because the range is too tight.
     params = {
         "m": 0, "r": "1,2,4",
-        "diff": f"{max(0, sr_center-1.0):.1f}-{sr_center+1.0:.1f}",
-        "ar":   f"{max(0, ar_center-1.2):.1f}-{min(11, ar_center+1.2):.1f}",
-        "bpm":  f"{bpm_center*0.78:.0f}-{bpm_center*1.22:.0f}",
-        "p": 0, "ps": 50,
+        "diff": f"{max(0, sr_center-1.3):.1f}-{sr_center+1.3:.1f}",
+        "ar":   f"{max(0, ar_center-1.5):.1f}-{min(11, ar_center+1.5):.1f}",
+        "bpm":  f"{bpm_center*0.75:.0f}-{bpm_center*1.25:.0f}",
+        "p": 0, "ps": 100,
     }
+    # If we have explicit beatmap tags to guide the search, include them.
+    if search_tags:
+        params["q"] = " ".join(search_tags[:5])
+
+    all_beatmapsets = []
     try:
         resp = requests.get(NERINYAN_API, params=params, timeout=10)
-        if not resp.ok: return []
-        beatmapsets = resp.json()
-        if not isinstance(beatmapsets, list): return []
+        if resp.ok:
+            data = resp.json()
+            if isinstance(data, list):
+                all_beatmapsets.extend(data)
     except Exception:
-        return []
+        pass
+
+    # Second pass without tag constraint if the first returned too few results.
+    if search_tags and len(all_beatmapsets) < rec_count * 2:
+        try:
+            params_fallback = {k: v for k, v in params.items() if k != "q"}
+            resp2 = requests.get(NERINYAN_API, params=params_fallback, timeout=10)
+            if resp2.ok:
+                data2 = resp2.json()
+                if isinstance(data2, list):
+                    existing_ids = {b.get("id") for b in all_beatmapsets}
+                    all_beatmapsets.extend(b for b in data2 if b.get("id") not in existing_ids)
+        except Exception:
+            pass
 
     results = []
-    for bms in beatmapsets:
+    for bms in all_beatmapsets:
         if not isinstance(bms, dict): continue
         if bms.get("id") in played_bms_ids: continue
         for bm in bms.get("beatmaps", []):
@@ -669,7 +765,8 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
             if mode_int != 0 and bm.get("mode") not in ("osu", "osu!"): continue
             if bm.get("id") in played_bm_ids: continue
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", bpm_center)
-            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w)
+            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
+                                      pp_target=pp_target)
             results.append({
                 "beatmapset": _pack_bms(bms),
                 "beatmap":    _pack_bm(bm, bms),
@@ -686,9 +783,25 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
 
 
 def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
-                      rec_count=8, sr_center=5.0):
+                      rec_count=8, sr_center=5.0, pp_target=None):
+    """
+    Fallback search via the osu! API.  Uses the player's dominant map type
+    as the search keyword so the results are style-relevant, not just popular.
+    """
+    _TYPE_QUERIES = {
+        "streams":        "streams",
+        "aim":            "aim jumps",
+        "tech":           "tech",
+        "finger control": "alternate alt",
+        "speed":          "speed",
+        "reading":        "reading",
+        "farm":           "farm",
+    }
+    dominant_type = max(type_w, key=type_w.get) if type_w else None
+    q = _TYPE_QUERIES.get(dominant_type, "") if dominant_type else ""
+
     try:
-        data = osu_get("/beatmapsets/search", {"m":0,"s":"ranked","sort":"plays_desc","q":""})
+        data = osu_get("/beatmapsets/search", {"m":0,"s":"ranked","sort":"plays_desc","q":q})
         beatmapsets = data.get("beatmapsets", [])
     except Exception:
         return []
@@ -699,7 +812,8 @@ def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
             if bm.get("mode") != "osu": continue
             if abs(bm.get("difficulty_rating",0) - sr_center) > 1.5: continue
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", 180)
-            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w)
+            score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
+                                      pp_target=pp_target)
             results.append({
                 "beatmapset": _pack_bms(bms),
                 "beatmap":    _pack_bm(bm, bms),
@@ -707,6 +821,57 @@ def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
             })
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:rec_count]
+
+
+def _diversify(recs, rec_count, max_per_mapper=2):
+    """
+    Re-order a ranked recommendation list to enforce variety:
+      - At most max_per_mapper maps from the same mapper appear in the final list.
+      - Surplus maps are moved to an overflow pool and back-filled only if
+        there aren't enough diverse alternatives to fill rec_count slots.
+
+    Score ordering is preserved within each group so the best map from each
+    mapper always appears before the second-best from the same mapper.
+    """
+    mapper_counts = {}
+    out, overflow = [], []
+    for r in recs:
+        creator = (r.get("beatmapset") or {}).get("creator", "").lower().strip()
+        mapper_counts[creator] = mapper_counts.get(creator, 0) + 1
+        if mapper_counts[creator] <= max_per_mapper:
+            out.append(r)
+        else:
+            overflow.append(r)
+
+    # Back-fill with overflow if we're short
+    for r in overflow:
+        if len(out) >= rec_count:
+            break
+        out.append(r)
+
+    return out[:rec_count]
+
+
+def _top_beatmap_tags(plays, n=5, top_n=20):
+    """
+    Extract the most representative beatmap tags from a slice of top plays.
+    Filters out very short tokens and common noise words so only meaningful
+    style/genre keywords reach the nerinyan search query.
+    """
+    _NOISE = {
+        "the", "and", "for", "feat", "ver", "mix", "short", "full", "long",
+        "remix", "edit", "size", "with", "from", "original", "version",
+    }
+    counts = {}
+    for play in plays[:top_n]:
+        bms = play.get("beatmapset", {})
+        for tag in (bms.get("tags") or "").lower().split():
+            if len(tag) > 3 and tag not in _NOISE:
+                counts[tag] = counts.get(tag, 0) + 1
+    # Return tags that appear in at least 2 plays so single-map noise is filtered
+    frequent = [t for t, c in counts.items() if c >= 2]
+    frequent.sort(key=lambda t: -counts[t])
+    return frequent[:n]
 
 
 def get_recommendations_for_profile(top_plays, cfg):
@@ -719,23 +884,55 @@ def get_recommendations_for_profile(top_plays, cfg):
     if taste_vec is None:
         return []
 
-    # Pull search center from taste vector
     sr_c  = float(taste_vec[0] * 10)
     ar_c  = float(taste_vec[1] * 11)
     bpm_c = float(taste_vec[4] * 400)
 
-    recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
-                           played_bm_ids, played_bms_ids, rec_count,
-                           sr_c, ar_c, bpm_c)
-    if len(recs) < rec_count // 2:
-        recs += _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
-                                  played_bms_ids, rec_count - len(recs), sr_c)
-    seen, out = set(), []
-    for r in recs:
-        bid = r["beatmapset"]["id"]
-        if bid not in seen:
-            seen.add(bid); out.append(r)
-    return out[:rec_count]
+    # PP threshold: the PP of the player's weakest top-100 play.  Any map that
+    # scores above this threshold (if the player FCed it) would push their total.
+    pps = sorted([float(p.get("pp") or 0) for p in top_plays if p.get("pp")], reverse=True)
+    pp_target = pps[min(len(pps) - 1, 99)] if pps else None
+
+    # Recurring beatmap tags used as a nerinyan search hint
+    search_tags = _top_beatmap_tags(top_plays, n=5, top_n=top_n) or None
+
+    # ── Multi-pass: comfort / current / challenge ─────────────────────────────
+    # Three queries at staggered SR centres give a more diverse difficulty spread
+    # rather than everything clustering at the user's exact average.
+    all_recs = []
+    seen_ids = set()
+    for sr_offset, band_count in [(-0.5, rec_count), (0.0, rec_count), (0.7, rec_count)]:
+        sr_band = sr_c + sr_offset
+        if sr_band < 1.0:
+            continue
+        band_recs = _query_nerinyan(
+            taste_vec, mapper_w, tag_w, type_w,
+            played_bm_ids, played_bms_ids, band_count,
+            sr_band, ar_c, bpm_c,
+            search_tags=search_tags,
+            pp_target=pp_target,
+        )
+        for r in band_recs:
+            bid = r["beatmapset"]["id"]
+            if bid not in seen_ids:
+                seen_ids.add(bid)
+                all_recs.append(r)
+
+    # Sort the merged pool by score, then diversify
+    all_recs.sort(key=lambda x: x["score"], reverse=True)
+
+    if len(all_recs) < rec_count // 2:
+        fallback = _query_osu_search(
+            taste_vec, mapper_w, tag_w, type_w,
+            played_bms_ids, rec_count - len(all_recs), sr_c,
+            pp_target=pp_target,
+        )
+        for r in fallback:
+            if r["beatmapset"]["id"] not in seen_ids:
+                seen_ids.add(r["beatmapset"]["id"])
+                all_recs.append(r)
+
+    return _diversify(all_recs, rec_count)
 
 
 def get_recommendations_for_play(play, top_plays, cfg):
@@ -750,18 +947,25 @@ def get_recommendations_for_play(play, top_plays, cfg):
     ar_c  = float(bm.get("ar", 9))
     bpm_c = float(bm.get("bpm") or bms.get("bpm") or 180)
 
+    # Use the source beatmap's own tags to guide the nerinyan search.
+    _NOISE = {"the","and","for","feat","ver","mix","short","full","long","remix","edit"}
+    raw_tags = [t for t in (bms.get("tags") or "").lower().split()
+                if len(t) > 3 and t not in _NOISE]
+    search_tags = raw_tags[:5] if raw_tags else None
+
     recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
                            played_bm_ids, played_bms_ids, rec_count,
-                           sr_c, ar_c, bpm_c)
+                           sr_c, ar_c, bpm_c, search_tags=search_tags)
+
     if len(recs) < rec_count // 2:
-        recs += _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
-                                  played_bms_ids, rec_count - len(recs), sr_c)
-    seen, out = set(), []
-    for r in recs:
-        bid = r["beatmapset"]["id"]
-        if bid not in seen:
-            seen.add(bid); out.append(r)
-    return out[:rec_count]
+        seen_ids = {r["beatmapset"]["id"] for r in recs}
+        fallback = _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
+                                     played_bms_ids, rec_count - len(recs), sr_c)
+        for r in fallback:
+            if r["beatmapset"]["id"] not in seen_ids:
+                recs.append(r)
+
+    return _diversify(recs, rec_count)
 
 
 # ─────────────────────────────────────────────
