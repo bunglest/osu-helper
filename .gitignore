@@ -1,0 +1,78 @@
+# ─── LOCAL SECRETS — NEVER COMMIT THESE ────────────────────────────────────
+# These files contain your osu! client_id, client_secret, and username.
+# If these end up on GitHub your API credentials are public and should be
+# immediately revoked on https://osu.ppy.sh/home/account/edit#oauth
+config.json
+profiles.json
+dismissed.json
+
+# ─── ENVIRONMENT FILES ──────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ─── PYTHON ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ─── VIRTUAL ENVIRONMENTS ────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# ─── DISTRIBUTION / BUILD ────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+.eggs/
+
+# ─── PYINSTALLER ─────────────────────────────────────────────────────────────
+*.spec
+# Keep installer.iss (Inno Setup script) — it has no secrets
+# dist/ is already ignored above
+
+# ─── TESTING & COVERAGE ──────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ─── TYPE CHECKERS ───────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyright/
+
+# ─── IDE & EDITORS ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── LOGS ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── WINDOWS INSTALLER ARTIFACTS ─────────────────────────────────────────────
+Output/
