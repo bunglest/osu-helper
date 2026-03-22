@@ -97,6 +97,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Recommendations
       </button>
+      <button class="tab" data-tab="liked" role="tab" id="tab-btn-liked" aria-selected="false" aria-controls="tab-liked">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        Liked
+      </button>
       <button class="tab" data-tab="settings" role="tab" id="tab-btn-settings" aria-selected="false" aria-controls="tab-settings">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
         Settings
@@ -247,11 +251,48 @@
       <button class="cat-tab" data-cat="comfort">Comfort</button>
       <button class="cat-tab" data-cat="challenge">Challenge</button>
       <button class="cat-tab" data-cat="just_ranked">Just Ranked</button>
+      <button class="cat-tab" data-cat="skill_gap">Skill Gap</button>
+    </div>
+    <div class="recs-toolbar">
+      <button class="btn btn-ghost btn-sm" id="export-recs-btn" onclick="exportRecs()" title="Export recommendation list">↓ Export</button>
     </div>
     <div id="recs-loading" class="loading-state"><div class="spinner-lg" aria-hidden="true"></div><p>Generating recommendations…</p></div>
     <div id="recs-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="recs-error-msg">Could not load recommendations</p><button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">Retry</button></div>
     <div id="recs-empty-cat" class="empty-cat hidden" role="status">No recommendations in this category yet.</div>
     <div id="recs-grid" class="recs-grid hidden" aria-live="polite"></div>
+  </section>
+
+  <!-- ══ LIKED MAPS TAB ══ -->
+  <section id="tab-liked" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-liked">
+    <div class="section-header">
+      <div>
+        <h2>Liked Maps</h2>
+        <p class="section-sub" id="liked-subtitle">Maps you've marked as Interested</p>
+      </div>
+      <div class="section-actions">
+        <button class="btn btn-ghost btn-sm" onclick="exportLiked()" title="Export liked maps">↓ Export</button>
+        <button class="btn btn-ghost btn-sm" onclick="loadLikedTab()" title="Refresh">↻ Refresh</button>
+      </div>
+    </div>
+    <!-- Taste profile summary -->
+    <div id="taste-profile-card" class="taste-profile-card hidden">
+      <div class="taste-profile-header">
+        <span class="taste-profile-title">Your Taste Profile</span>
+        <span id="skill-gap-badge" class="skill-gap-banner hidden"></span>
+      </div>
+      <div class="taste-chart-wrap">
+        <canvas id="taste-radar" width="280" height="280" aria-label="Taste profile radar chart"></canvas>
+      </div>
+      <div id="taste-type-chips" class="taste-type-chips"></div>
+    </div>
+    <!-- Liked map list -->
+    <div id="liked-loading" class="loading-state hidden"><div class="spinner-lg" aria-hidden="true"></div><p>Loading liked maps…</p></div>
+    <div id="liked-empty" class="empty-state hidden" role="status">
+      <div class="empty-icon" aria-hidden="true">♡</div>
+      <div class="empty-title">No liked maps yet</div>
+      <div class="empty-sub">Hit <strong>♡ Interested</strong> on a recommendation to start building your taste profile.</div>
+    </div>
+    <div id="liked-grid" class="recs-grid hidden" aria-live="polite"></div>
   </section>
 
   <!-- ══ SETTINGS TAB ══ -->
@@ -387,12 +428,17 @@
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
     <span>Recs</span>
   </button>
+  <button class="mobile-tab" data-tab="liked">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+    <span>Liked</span>
+  </button>
   <button class="mobile-tab" data-tab="settings">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
     <span>Settings</span>
   </button>
 </nav>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

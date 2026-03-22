@@ -48,6 +48,7 @@ app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 CONFIG_FILE     = os.path.join(DATA_DIR, "config.json")
 PROFILES_FILE   = os.path.join(DATA_DIR, "profiles.json")
 DISMISSED_FILE  = os.path.join(DATA_DIR, "dismissed.json")
+FEEDBACK_FILE   = os.path.join(DATA_DIR, "feedback.json")
 OSU_API_BASE    = "https://osu.ppy.sh/api/v2"
 OSU_TOKEN_URL   = "https://osu.ppy.sh/oauth/token"
 OSU_AUTH_URL    = "https://osu.ppy.sh/oauth/authorize"
@@ -278,20 +279,64 @@ def fetch_recent_plays(username, limit=30):
 
 # ── Dismissed beatmapset persistence ─────────────────────────────────────────
 
-def load_dismissed():
-    """Return the set of beatmapset IDs the player has dismissed."""
+def _load_dismissed_raw():
+    """
+    Load dismissed.json handling both formats:
+      old: [id1, id2, ...]
+      new: {"ids": [...], "entries": [...]}
+    Returns the dict in new format.
+    """
     if os.path.exists(DISMISSED_FILE):
         try:
             with open(DISMISSED_FILE) as f:
-                return set(int(x) for x in json.load(f))
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                return raw
+            # Migrate flat list → new format (no vectors for old entries)
+            return {"ids": sorted(int(x) for x in raw), "entries": []}
         except Exception:
             pass
-    return set()
+    return {"ids": [], "entries": []}
+
+
+def load_dismissed():
+    """Return the set of dismissed beatmapset IDs."""
+    return set(int(x) for x in _load_dismissed_raw().get("ids", []))
 
 
 def save_dismissed(ids: set):
+    """Persist dismissed IDs, preserving existing vector entries."""
+    data = _load_dismissed_raw()
+    data["ids"] = sorted(ids)
+    # Prune vector entries for IDs that were un-dismissed
+    data["entries"] = [e for e in data.get("entries", []) if e.get("bms_id") in ids]
     with open(DISMISSED_FILE, "w") as f:
-        json.dump(sorted(ids), f)
+        json.dump(data, f, indent=2)
+
+
+def load_dismissed_vecs():
+    """Return the list of dismissed-map vector entries (for dislike penalty)."""
+    return _load_dismissed_raw().get("entries", [])
+
+
+# ── Feedback (liked maps) persistence ────────────────────────────────────────
+
+def load_feedback():
+    """Return the feedback dict: {"liked": [...]}"""
+    if os.path.exists(FEEDBACK_FILE):
+        try:
+            with open(FEEDBACK_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {"liked": []}
+
+
+def save_feedback(data: dict):
+    with open(FEEDBACK_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 def current_username():
@@ -683,8 +728,57 @@ def _build_user_context(plays, top_n=20):
     return taste_vec, _normalise(mapper_raw), {}, _normalise(type_raw)
 
 
+def _build_liked_context(liked_list):
+    """
+    Convert the raw liked-map list from feedback.json into a list of dicts
+    suitable for use in _ai_score.  Each dict has:
+      "vec"        — raw 8-dim feature vector (NOT yet weighted by _FEAT_W)
+      "creator"    — lowercase mapper name
+      "map_types"  — list of type strings from classify_map_type
+    """
+    if not liked_list:
+        return []
+    result = []
+    for entry in liked_list:
+        raw_vec = entry.get("vec")
+        if raw_vec is None:
+            continue
+        try:
+            result.append({
+                "vec":       np.array(raw_vec, dtype=float),
+                "creator":   (entry.get("creator") or "").lower().strip(),
+                "map_types": entry.get("map_types") or [],
+            })
+        except Exception:
+            pass
+    return result
+
+
+def _build_disliked_context(dismissed_entries):
+    """
+    Convert dismissed vector entries into the same format as liked_vecs so
+    _ai_score can apply a penalty to candidates that resemble dismissed maps.
+    """
+    if not dismissed_entries:
+        return []
+    result = []
+    for entry in dismissed_entries:
+        raw_vec = entry.get("vec")
+        if raw_vec is None:
+            continue
+        try:
+            result.append({
+                "vec":       np.array(raw_vec, dtype=float),
+                "creator":   (entry.get("creator") or "").lower().strip(),
+                "map_types": entry.get("map_types") or [],
+            })
+        except Exception:
+            pass
+    return result
+
+
 def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
-              pp_target=None, preferred_mods=None):
+              pp_target=None, preferred_mods=None, liked_vecs=None, disliked_vecs=None):
     """
     Score a candidate map (higher = better match). Returns (score, reason_str).
 
@@ -794,6 +888,42 @@ def _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
         if "HR" in acronyms and ar_base <= 9.0:
             reasons.append("suitable base AR for HR")
 
+    # ── Liked-map similarity bonus (max +15) ─
+    # If the player has explicitly liked maps, boost candidates that are
+    # cosine-similar to those liked maps.  We average similarity across all
+    # liked entries so a single unusual like doesn't dominate the ranking.
+    if liked_vecs:
+        sims = []
+        for lv in liked_vecs:
+            lv_w = lv["vec"] * _FEAT_W
+            sims.append(_cosine(vec, lv_w))
+        avg_sim = sum(sims) / len(sims)
+        if avg_sim > 0.90:
+            score += 15
+            reasons.append("very similar to maps you liked")
+        elif avg_sim > 0.75:
+            score += 10
+            reasons.append("similar to maps you liked")
+        elif avg_sim > 0.60:
+            score += 5
+            reasons.append("loosely similar to maps you liked")
+
+    # ── Disliked-map similarity penalty (max -8) ─
+    # Penalise candidates that resemble maps the player has dismissed, so the
+    # algorithm actively steers away from content they've shown they don't want.
+    if disliked_vecs:
+        sims = []
+        for dv in disliked_vecs:
+            dv_w = dv["vec"] * _FEAT_W
+            sims.append(_cosine(vec, dv_w))
+        avg_dsim = sum(sims) / len(sims)
+        if avg_dsim > 0.90:
+            score -= 8
+        elif avg_dsim > 0.75:
+            score -= 5
+        elif avg_dsim > 0.60:
+            score -= 2
+
     # ── Minimum quality filter ───────────────
     # Maps with very few plays are likely obscure or low-effort; dampen them.
     playcount = int(bm.get("playcount") or 0)
@@ -862,7 +992,7 @@ def _pack_bm(bm, bms):
 def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
                     rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180,
                     search_tags=None, pp_target=None, preferred_mods=None,
-                    sr_min=None, sr_max=None):
+                    sr_min=None, sr_max=None, liked_vecs=None, disliked_vecs=None):
     # Build the base query; wider windows give more candidates for the scorer to
     # rank rather than returning too few results because the range is too tight.
     diff_lo = max(sr_center - 1.3, sr_min if sr_min is not None else 0)
@@ -914,7 +1044,9 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", bpm_center)
             score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
                                       pp_target=pp_target,
-                                      preferred_mods=preferred_mods)
+                                      preferred_mods=preferred_mods,
+                                      liked_vecs=liked_vecs,
+                                      disliked_vecs=disliked_vecs)
             results.append({
                 "beatmapset":   _pack_bms(bms),
                 "beatmap":      _pack_bm(bm, bms),
@@ -934,7 +1066,8 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
 
 
 def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
-                      rec_count=8, sr_center=5.0, pp_target=None, preferred_mods=None):
+                      rec_count=8, sr_center=5.0, pp_target=None, preferred_mods=None,
+                      liked_vecs=None, disliked_vecs=None):
     """
     Fallback search via the osu! API.  Uses the player's dominant map type
     as the search keyword so the results are style-relevant, not just popular.
@@ -965,7 +1098,9 @@ def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
             bm["bpm"] = bm.get("bpm") or bms.get("bpm", 180)
             score, reason = _ai_score(bm, bms, taste_vec, mapper_w, tag_w, type_w,
                                       pp_target=pp_target,
-                                      preferred_mods=preferred_mods)
+                                      preferred_mods=preferred_mods,
+                                      liked_vecs=liked_vecs,
+                                      disliked_vecs=disliked_vecs)
             results.append({
                 "beatmapset":   _pack_bms(bms),
                 "beatmap":      _pack_bm(bm, bms),
@@ -1110,8 +1245,13 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
     # Recurring beatmap tags used as a nerinyan search hint
     search_tags = _top_beatmap_tags(top_plays, n=5, top_n=top_n) or None
 
-    # ── Load dismissed beatmapset IDs ─────────────────────────────────────────
-    dismissed_ids = load_dismissed()
+    # ── Load dismissed beatmapset IDs & vectors ───────────────────────────────
+    dismissed_ids   = load_dismissed()
+    disliked_vecs   = _build_disliked_context(load_dismissed_vecs())
+
+    # ── Load liked-map context ────────────────────────────────────────────────
+    feedback_data = load_feedback()
+    liked_vecs    = _build_liked_context(feedback_data.get("liked", []))
 
     # ── Multi-pass: comfort / current / challenge ─────────────────────────────
     all_recs = []
@@ -1129,6 +1269,8 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
             preferred_mods=dominant_combo,
             sr_min=sr_min,
             sr_max=sr_max,
+            liked_vecs=liked_vecs,
+            disliked_vecs=disliked_vecs,
         )
         for r in band_recs:
             bid = r["beatmapset"]["id"]
@@ -1139,12 +1281,54 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
 
     all_recs.sort(key=lambda x: x["score"], reverse=True)
 
+    # ── Skill-gap pass ────────────────────────────────────────────────────────
+    # Detect which learnable map type is most underrepresented in the player's
+    # taste profile and fetch a small batch of maps specifically for that gap.
+    _LEARNABLE_TYPES = ["streams", "aim", "tech", "reading", "finger control", "speed"]
+    gap_type = None
+    gap_score = 1.0  # lowest weight wins
+    for t in _LEARNABLE_TYPES:
+        w = type_w.get(t, 0.0)
+        if w < gap_score:
+            gap_score = w
+            gap_type  = t
+    if gap_type and gap_score < 0.25:
+        _TYPE_TAGS = {
+            "streams":        ["streams", "stream"],
+            "aim":            ["aim", "jumps"],
+            "tech":           ["tech", "technical"],
+            "reading":        ["reading", "lowAR"],
+            "finger control": ["alternate", "alt"],
+            "speed":          ["speed"],
+        }
+        gap_tags = _TYPE_TAGS.get(gap_type, [gap_type])
+        gap_recs = _query_nerinyan(
+            taste_vec, mapper_w, {}, {gap_type: 1.0},
+            played_bm_ids, played_bms_ids, max(3, rec_count // 4),
+            sr_c, ar_c, bpm_c,
+            search_tags=gap_tags,
+            pp_target=pp_target,
+            preferred_mods=dominant_combo,
+            sr_min=sr_min, sr_max=sr_max,
+            liked_vecs=liked_vecs, disliked_vecs=disliked_vecs,
+        )
+        for r in gap_recs:
+            bid = r["beatmapset"]["id"]
+            if bid not in seen_ids and bid not in dismissed_ids:
+                seen_ids.add(bid)
+                r["category"]   = "skill_gap"
+                r["gap_type"]   = gap_type
+                r["reason"]     = f"expand your {gap_type} skills · " + (r.get("reason") or "")
+                all_recs.append(r)
+
     if len(all_recs) < rec_count // 2:
         fallback = _query_osu_search(
             taste_vec, mapper_w, tag_w, type_w,
             played_bms_ids, rec_count - len(all_recs), sr_c,
             pp_target=pp_target,
             preferred_mods=dominant_combo,
+            liked_vecs=liked_vecs,
+            disliked_vecs=disliked_vecs,
         )
         for r in fallback:
             bid = r["beatmapset"]["id"]
@@ -1185,12 +1369,18 @@ def get_recommendations_for_play(play, top_plays, cfg):
     search_tags = raw_tags[:5] if raw_tags else None
 
     dismissed_ids = load_dismissed()
+    disliked_vecs = _build_disliked_context(load_dismissed_vecs())
+
+    feedback_data = load_feedback()
+    liked_vecs    = _build_liked_context(feedback_data.get("liked", []))
 
     recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
                            played_bm_ids, played_bms_ids, rec_count,
                            sr_c, ar_c, bpm_c,
                            search_tags=search_tags,
-                           preferred_mods=play_mods)
+                           preferred_mods=play_mods,
+                           liked_vecs=liked_vecs,
+                           disliked_vecs=disliked_vecs)
     recs = [r for r in recs if r["beatmapset"]["id"] not in dismissed_ids]
     for r in recs:
         r.setdefault("category", "best_match")
@@ -1199,7 +1389,9 @@ def get_recommendations_for_play(play, top_plays, cfg):
         seen_ids = {r["beatmapset"]["id"] for r in recs}
         fallback = _query_osu_search(taste_vec, mapper_w, tag_w, type_w,
                                      played_bms_ids, rec_count - len(recs), sr_c,
-                                     preferred_mods=play_mods)
+                                     preferred_mods=play_mods,
+                                     liked_vecs=liked_vecs,
+                                     disliked_vecs=disliked_vecs)
         for r in fallback:
             bid = r["beatmapset"]["id"]
             if bid not in seen_ids and bid not in dismissed_ids:
@@ -1659,7 +1851,11 @@ def api_dismissed_get():
 
 @app.route("/api/dismissed", methods=["POST"])
 def api_dismissed_post():
-    """Add a beatmapset to the dismissed list. Body: {beatmapset_id: N}"""
+    """
+    Add a beatmapset to the dismissed list.
+    Body: {beatmapset_id: N, bm: {...}, bms: {...}}
+    bm/bms are optional but enable the disliked-map penalty.
+    """
     body = request.get_json(force=True)
     bms_id = body.get("beatmapset_id")
     if bms_id is None:
@@ -1670,6 +1866,29 @@ def api_dismissed_post():
         return jsonify({"error": "beatmapset_id must be integer"}), 400
     ids = load_dismissed()
     ids.add(bms_id)
+
+    # Optionally store feature vector for negative-feedback scoring
+    bm_obj  = body.get("bm") or {}
+    bms_obj = body.get("bms") or {}
+    if bm_obj:
+        try:
+            raw_vec = _bm_to_vec(bm_obj, bms_obj).tolist()
+            data = _load_dismissed_raw()
+            data["ids"] = sorted(ids)
+            data.setdefault("entries", [])
+            data["entries"] = [e for e in data["entries"] if e.get("bms_id") != bms_id]
+            data["entries"].append({
+                "bms_id":    bms_id,
+                "vec":       raw_vec,
+                "creator":   (bms_obj.get("creator") or "").lower().strip(),
+                "map_types": classify_map_type(bm_obj, bms_obj),
+            })
+            with open(DISMISSED_FILE, "w") as f:
+                json.dump(data, f, indent=2)
+            return jsonify({"ok": True, "dismissed_count": len(ids)})
+        except Exception:
+            pass  # fall through to simple save
+
     save_dismissed(ids)
     return jsonify({"ok": True, "dismissed_count": len(ids)})
 
@@ -1681,6 +1900,80 @@ def api_dismissed_delete(bms_id):
     ids.discard(bms_id)
     save_dismissed(ids)
     return jsonify({"ok": True})
+
+
+# ─────────────────────────────────────────────
+# Feedback (liked maps) API routes
+# ─────────────────────────────────────────────
+
+@app.route("/api/feedback", methods=["GET"])
+def api_feedback_get():
+    """Return full liked map entries plus a flat list of IDs."""
+    data = load_feedback()
+    liked = data.get("liked", [])
+    liked_ids = [e["bms_id"] for e in liked if "bms_id" in e]
+    return jsonify({"liked": liked_ids, "entries": liked, "count": len(liked)})
+
+
+@app.route("/api/feedback/like", methods=["POST"])
+def api_feedback_like():
+    """
+    Mark a beatmapset as 'interested / liked'.
+    Body: {
+      beatmapset_id: N,
+      beatmap_id:    N,          # optional — the specific diff the player liked
+      bm:            {...},      # beatmap object (for feature vector)
+      bms:           {...}       # beatmapset object (for mapper/tags)
+    }
+    """
+    body   = request.get_json(force=True)
+    bms_id = body.get("beatmapset_id")
+    if bms_id is None:
+        return jsonify({"error": "beatmapset_id required"}), 400
+    try:
+        bms_id = int(bms_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "beatmapset_id must be integer"}), 400
+
+    bm_obj  = body.get("bm") or {}
+    bms_obj = body.get("bms") or {}
+
+    # Build the feature vector from the supplied beatmap data so future
+    # recommendations can compare against it without a round-trip to the API.
+    try:
+        raw_vec = _bm_to_vec(bm_obj, bms_obj).tolist()
+    except Exception:
+        raw_vec = None
+
+    entry = {
+        "bms_id":   bms_id,
+        "bm_id":    body.get("beatmap_id"),
+        "liked_at": datetime.now(timezone.utc).isoformat(),
+        "vec":      raw_vec,
+        "sr":       bm_obj.get("difficulty_rating"),
+        "ar":       bm_obj.get("ar"),
+        "bpm":      bm_obj.get("bpm") or bms_obj.get("bpm"),
+        "creator":  (bms_obj.get("creator") or "").lower().strip(),
+        "map_types": classify_map_type(bm_obj, bms_obj) if bm_obj else [],
+    }
+
+    data = load_feedback()
+    # Remove any existing entry for this beatmapset before re-adding
+    data["liked"] = [e for e in data.get("liked", []) if e.get("bms_id") != bms_id]
+    data["liked"].append(entry)
+    save_feedback(data)
+    return jsonify({"ok": True, "liked_count": len(data["liked"])})
+
+
+@app.route("/api/feedback/like/<int:bms_id>", methods=["DELETE"])
+def api_feedback_unlike(bms_id):
+    """Remove a beatmapset from the liked list (un-like)."""
+    data = load_feedback()
+    before = len(data.get("liked", []))
+    data["liked"] = [e for e in data.get("liked", []) if e.get("bms_id") != bms_id]
+    if len(data["liked"]) != before:
+        save_feedback(data)
+    return jsonify({"ok": True, "liked_count": len(data["liked"])})
 
 
 @app.route("/api/recommendations/for-play/<int:play_index>")
@@ -1699,6 +1992,55 @@ def api_recommendations_for_play(play_index):
         play = plays[play_index]
         recs = get_recommendations_for_play(play, plays, cfg)
         return jsonify({"recommendations": recs, "play": _serialize_play(play)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profile-stats")
+def api_profile_stats():
+    """
+    Return the player's taste profile for radar chart display.
+    Includes the 8-dim taste vector (denormalised to human ranges),
+    map-type weights, dominant mod combo, and skill-gap type.
+    """
+    username = current_username()
+    if not username:
+        return jsonify({"error": "Not logged in"}), 401
+    cfg = load_config()
+    try:
+        plays = _get_user_plays(username)
+        if not plays:
+            plays = fetch_top_plays(username, 100)
+            _set_user_plays(username, plays)
+
+        top_n = cfg.get("top_n", 20)
+        taste_vec, mapper_w, _, type_w = _build_user_context(plays, top_n)
+        if taste_vec is None:
+            return jsonify({"error": "Not enough plays"}), 400
+
+        _, dominant_combo = _detect_preferred_mods(plays, top_n)
+
+        # Denormalise taste vector back to human-readable ranges
+        axes = [
+            {"key": "sr",           "label": "Star Rating",    "value": round(float(taste_vec[0] * 10),    2), "max": 10},
+            {"key": "ar",           "label": "Approach Rate",  "value": round(float(taste_vec[1] * 11),    2), "max": 11},
+            {"key": "od",           "label": "Overall Diff",   "value": round(float(taste_vec[2] * 10),    2), "max": 10},
+            {"key": "cs",           "label": "Circle Size",    "value": round(float(taste_vec[3] * 10),    2), "max": 10},
+            {"key": "bpm",          "label": "BPM",            "value": round(float(taste_vec[4] * 400),   1), "max": 400},
+            {"key": "density",      "label": "Note Density",   "value": round(float(taste_vec[6] * 15),    2), "max": 15},
+        ]
+
+        # Skill gap: least-represented learnable type
+        _LEARNABLE = ["streams", "aim", "tech", "reading", "finger control", "speed"]
+        gap_type = min(_LEARNABLE, key=lambda t: type_w.get(t, 0.0))
+        gap_weight = type_w.get(gap_type, 0.0)
+
+        return jsonify({
+            "axes":          axes,
+            "type_weights":  type_w,
+            "dominant_mods": dominant_combo,
+            "skill_gap":     gap_type if gap_weight < 0.25 else None,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

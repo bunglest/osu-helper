@@ -15,6 +15,7 @@ let meData        = null;       // result of /api/me
 let allProfiles   = [];         // local mode only
 let activeProfileId = null;
 let selectedMods  = [];         // mods chosen in settings UI
+let likedBmsIds   = new Set();  // beatmapset IDs the player has liked
 
 const OAUTH_MODE = window.OAUTH_MODE === true;
 
@@ -48,8 +49,18 @@ async function bootstrap() {
     startSSE();
   }
 
-  await Promise.all([loadTopPlays(), loadUserInfo()]);
+  await Promise.all([loadTopPlays(), loadUserInfo(), loadLikedIds()]);
   loadRecommendations();
+}
+
+// ─── Liked IDs loader ───────────────────────
+async function loadLikedIds() {
+  try {
+    const r = await fetch('/api/feedback');
+    if (!r.ok) return;
+    const data = await r.json();
+    likedBmsIds = new Set((data.liked || []).map(Number));
+  } catch (_) {}
 }
 
 // ─── /api/me ────────────────────────────────
@@ -679,11 +690,17 @@ document.addEventListener('click', e => {
 
 // ─── Dismiss ──────────────────────────────────
 async function dismissRec(bmsId, cardEl) {
+  // Find rec data so we can send bm/bms for the disliked-vector store
+  const rec = currentRecs.find(r => (r.beatmapset || {}).id === bmsId) || {};
   try {
     await fetch('/api/dismissed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ beatmapset_id: bmsId }),
+      body: JSON.stringify({
+        beatmapset_id: bmsId,
+        bm:  rec.beatmap    || {},
+        bms: rec.beatmapset || {},
+      }),
     });
     // Remove from local state
     currentRecs = currentRecs.filter(r => (r.beatmapset || {}).id !== bmsId);
@@ -696,6 +713,79 @@ async function dismissRec(bmsId, cardEl) {
   } catch (e) {
     toast('Could not dismiss map', 'err');
   }
+}
+
+// ─── Like / Unlike ────────────────────────────
+async function likeRec(bmsId, bm, bms, btnEl) {
+  const alreadyLiked = likedBmsIds.has(bmsId);
+  try {
+    if (alreadyLiked) {
+      await fetch(`/api/feedback/like/${bmsId}`, { method: 'DELETE' });
+      likedBmsIds.delete(bmsId);
+      if (btnEl) {
+        btnEl.textContent = '♡ Interested';
+        btnEl.classList.remove('btn-liked');
+      }
+      toast('Removed from liked maps', 'info');
+    } else {
+      await fetch('/api/feedback/like', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ beatmapset_id: bmsId, beatmap_id: bm.id, bm, bms }),
+      });
+      likedBmsIds.add(bmsId);
+      if (btnEl) {
+        btnEl.textContent = '♥ Interested';
+        btnEl.classList.add('btn-liked');
+      }
+      toast('Added to liked maps — recs will adapt', 'ok');
+    }
+  } catch (e) {
+    toast('Could not update liked maps', 'err');
+  }
+}
+
+function likeRecById(bmsId, el) {
+  // Find the rec data from currentRecs
+  const rec = currentRecs.find(r => (r.beatmapset || {}).id === bmsId);
+  if (!rec) return;
+  const card = el?.closest('.rec-card');
+  const btn  = card?.querySelector('.btn-like');
+  likeRec(bmsId, rec.beatmap || {}, rec.beatmapset || {}, btn);
+}
+
+let _audioEl = null;   // single shared audio element
+let _playingBmsId = null;
+
+function togglePreview(bmsId, btnEl) {
+  const previewUrl = `https://b.ppy.sh/preview/${bmsId}.mp3`;
+  if (_playingBmsId === bmsId) {
+    // Pause current
+    _audioEl?.pause();
+    _playingBmsId = null;
+    document.querySelectorAll('.btn-preview.playing').forEach(b => {
+      b.textContent = '▶'; b.classList.remove('playing');
+    });
+    return;
+  }
+  // Stop any other preview
+  if (_audioEl) { _audioEl.pause(); _audioEl = null; }
+  document.querySelectorAll('.btn-preview.playing').forEach(b => {
+    b.textContent = '▶'; b.classList.remove('playing');
+  });
+  _audioEl = new Audio(previewUrl);
+  _audioEl.volume = 0.5;
+  _playingBmsId = bmsId;
+  btnEl.textContent = '■'; btnEl.classList.add('playing');
+  _audioEl.play().catch(() => {
+    toast('Preview unavailable', 'info');
+    btnEl.textContent = '▶'; btnEl.classList.remove('playing');
+    _playingBmsId = null;
+  });
+  _audioEl.onended = () => {
+    btnEl.textContent = '▶'; btnEl.classList.remove('playing');
+    _playingBmsId = null;
+  };
 }
 
 function buildRecCard(rec) {
@@ -755,9 +845,11 @@ function buildRecCard(rec) {
     ${rec.reason ? `<div class="rec-reason">💡 ${esc(rec.reason)}</div>` : ''}
   </div>
   <div class="rec-actions">
+    <button class="btn-preview" onclick="togglePreview(${bmsId}, this)" title="Preview audio">▶</button>
     <a href="${viewUrl}" target="_blank" class="btn-outline">View</a>
     <a href="${dlUrl}" target="_blank" class="btn-outline btn-dl">Download</a>
     <a href="osu://b/${bmId}" class="btn-outline" title="Open in osu!">▶ Play</a>
+    <button class="btn-like${likedBmsIds.has(bmsId) ? ' btn-liked' : ''}" onclick="likeRecById(${bmsId}, this)" title="Mark as interested">${likedBmsIds.has(bmsId) ? '♥ Interested' : '♡ Interested'}</button>
     <button class="btn-dismiss" onclick="dismissRecById(${bmsId}, this)" title="Not interested">✕ Not interested</button>
   </div>
 </div>`;
@@ -845,6 +937,15 @@ function switchTab(name) {
   });
   // Tab panels
   document.querySelectorAll('.tab-content').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
+  // Lazy-load the liked tab on first visit
+  if (name === 'liked' && !likedTabLoaded) loadLikedTab();
+  // Stop audio preview when navigating away
+  if (name !== 'recs' && _audioEl) {
+    _audioEl.pause(); _audioEl = null; _playingBmsId = null;
+    document.querySelectorAll('.btn-preview.playing').forEach(b => {
+      b.textContent = '▶'; b.classList.remove('playing');
+    });
+  }
 }
 
 // ─── Toast ───────────────────────────────────
@@ -884,6 +985,197 @@ function starColorClass(sr) {
   return 'stars-7';
 }
 
+// ─── Export functions ────────────────────────
+function exportRecs() {
+  if (!currentRecs.length) { toast('No recommendations to export', 'info'); return; }
+  const lines = currentRecs.map(r => {
+    const bms = r.beatmapset || {}, bm = r.beatmap || {};
+    return `osu://b/${bm.id}  # ${bms.artist || ''} - ${bms.title || ''} [${bm.version || ''}] by ${bms.creator || ''} (${bm.difficulty_rating || '?'}★)`;
+  });
+  _downloadText('osu-recommendations.txt', lines.join('\n'));
+  toast('Recommendations exported', 'ok');
+}
+
+async function exportLiked() {
+  try {
+    const r = await fetch('/api/feedback');
+    const data = await r.json();
+    const entries = data.entries || [];
+    if (!entries.length) { toast('No liked maps to export', 'info'); return; }
+    const lines = entries.map(e => {
+      const title = e.title || e.bms_id;
+      return `osu://s/${e.bms_id}  # ${title}`;
+    });
+    _downloadText('osu-liked-maps.txt', lines.join('\n'));
+    toast('Liked maps exported', 'ok');
+  } catch (_) { toast('Could not export liked maps', 'err'); }
+}
+
+function _downloadText(filename, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ─── Liked Maps Tab ──────────────────────────
+let likedTabLoaded = false;
+let _radarChart    = null;
+
+async function loadLikedTab() {
+  likedTabLoaded = true;
+  const grid    = document.getElementById('liked-grid');
+  const empty   = document.getElementById('liked-empty');
+  const loading = document.getElementById('liked-loading');
+  const profile = document.getElementById('taste-profile-card');
+  loading?.classList.remove('hidden');
+  grid?.classList.add('hidden');
+  empty?.classList.add('hidden');
+  profile?.classList.add('hidden');
+
+  try {
+    const [feedResp, statsResp] = await Promise.all([
+      fetch('/api/feedback'),
+      fetch('/api/profile-stats'),
+    ]);
+    const feedData  = await feedResp.json();
+    const statsData = statsResp.ok ? await statsResp.json() : null;
+
+    const entries = feedData.entries || [];
+    loading?.classList.add('hidden');
+
+    // Render liked map cards
+    if (!entries.length) {
+      empty?.classList.remove('hidden');
+    } else {
+      grid.innerHTML = entries.map(buildLikedCard).join('');
+      grid?.classList.remove('hidden');
+      document.getElementById('liked-subtitle').textContent =
+        `${entries.length} liked map${entries.length !== 1 ? 's' : ''} shaping your recommendations`;
+    }
+
+    // Render taste profile radar
+    if (statsData && !statsData.error) {
+      renderTasteProfile(statsData);
+      profile?.classList.remove('hidden');
+    }
+  } catch (e) {
+    loading?.classList.add('hidden');
+    toast('Could not load liked maps', 'err');
+  }
+}
+
+function buildLikedCard(entry) {
+  const bmsId = entry.bms_id || 0;
+  const title = esc(entry.title || `Map #${bmsId}`);
+  const artist = esc(entry.artist || '');
+  const creator = esc(entry.creator || '');
+  const sr = entry.sr ? parseFloat(entry.sr).toFixed(2) : '?';
+  const ar = entry.ar ? `AR${parseFloat(entry.ar).toFixed(1)}` : '';
+  const bpm = entry.bpm ? `${Math.round(entry.bpm)}BPM` : '';
+  const types = entry.map_types || [];
+  const likedAt = entry.liked_at ? new Date(entry.liked_at).toLocaleDateString() : '';
+
+  return `<div class="rec-card liked-card" data-bmsid="${bmsId}">
+  <div class="rec-body" style="padding:0.8rem 0.95rem">
+    <div class="rec-title-row">
+      <div class="rec-title">${title}</div>
+      <span class="liked-date">${likedAt}</span>
+    </div>
+    <div class="rec-mapper">${artist}${artist && creator ? ' · ' : ''}${creator ? 'mapped by ' + creator : ''}</div>
+    <div class="rec-attrs">
+      ${sr !== '?' ? `<span class="attr-chip">★ ${sr}</span>` : ''}
+      ${ar ? `<span class="attr-chip ar">${ar}</span>` : ''}
+      ${bpm ? `<span class="attr-chip bpm">${bpm}</span>` : ''}
+    </div>
+    ${renderTypeBadges(types)}
+  </div>
+  <div class="rec-actions">
+    <a href="https://osu.ppy.sh/s/${bmsId}" target="_blank" rel="noopener" class="btn-outline">View</a>
+    <button class="btn-dismiss" onclick="unlikeFromTab(${bmsId}, this)" title="Remove from liked">✕ Unlike</button>
+  </div>
+</div>`;
+}
+
+async function unlikeFromTab(bmsId, el) {
+  try {
+    await fetch(`/api/feedback/like/${bmsId}`, { method: 'DELETE' });
+    likedBmsIds.delete(bmsId);
+    const card = el?.closest('.rec-card');
+    if (card) { card.classList.add('dismissing'); setTimeout(() => card.remove(), 300); }
+    toast('Removed from liked maps', 'info');
+    // Refresh the liked-bms tracking in the recs tab
+    renderRecs(currentRecs);
+  } catch (_) { toast('Could not unlike map', 'err'); }
+}
+
+// ─── Taste Radar Chart ───────────────────────
+function renderTasteProfile(stats) {
+  const axes        = stats.axes || [];
+  const typeWeights = stats.type_weights || {};
+  const skillGap    = stats.skill_gap;
+
+  // Radar chart
+  const labels = axes.map(a => a.label);
+  const values = axes.map(a => Math.min((a.value / a.max) * 100, 100));
+  const ctx    = document.getElementById('taste-radar');
+  if (!ctx) return;
+
+  if (_radarChart) { _radarChart.destroy(); _radarChart = null; }
+  _radarChart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Your Profile',
+        data: values,
+        backgroundColor: 'rgba(255,102,170,0.15)',
+        borderColor:     'rgba(255,102,170,0.85)',
+        pointBackgroundColor: 'rgba(255,102,170,1)',
+        pointRadius: 4,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          min: 0, max: 100,
+          ticks: { display: false, stepSize: 25 },
+          grid:        { color: 'rgba(255,255,255,0.08)' },
+          angleLines:  { color: 'rgba(255,255,255,0.08)' },
+          pointLabels: { color: '#ccc', font: { size: 11, family: "'DM Sans', sans-serif" } },
+        },
+      },
+    },
+  });
+
+  // Map-type chips
+  const chipEl = document.getElementById('taste-type-chips');
+  if (chipEl) {
+    const sorted = Object.entries(typeWeights).sort((a, b) => b[1] - a[1]);
+    chipEl.innerHTML = sorted.map(([t, w]) => {
+      const pct = Math.round(w * 100);
+      if (pct < 5) return '';
+      const cls = 'type-' + t.replace(/\s+/g, '-');
+      return `<span class="type-badge ${cls}" title="${pct}% of your plays">${esc(t)} ${pct}%</span>`;
+    }).join('');
+  }
+
+  // Skill gap banner
+  const gapEl = document.getElementById('skill-gap-badge');
+  if (gapEl) {
+    if (skillGap) {
+      gapEl.textContent = `💡 Skill gap: ${skillGap}`;
+      gapEl.classList.remove('hidden');
+    } else {
+      gapEl.classList.add('hidden');
+    }
+  }
+}
+
 // Expose for inline onclick handlers
 window.loadTopPlays                  = loadTopPlays;
 window.loadRecommendations           = loadRecommendations;
@@ -901,4 +1193,10 @@ window.openAddProfile                = openAddProfile;
 window.closeAddProfile               = closeAddProfile;
 window.submitAddProfile              = submitAddProfile;
 window.dismissRecById                = dismissRecById;
+window.likeRecById                   = likeRecById;
+window.unlikeFromTab                 = unlikeFromTab;
+window.togglePreview                 = togglePreview;
+window.exportRecs                    = exportRecs;
+window.exportLiked                   = exportLiked;
+window.loadLikedTab                  = loadLikedTab;
 window.showConfirm                   = showConfirm;

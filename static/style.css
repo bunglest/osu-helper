@@ -1236,6 +1236,133 @@ a:hover { color: var(--pink-light); text-decoration: underline; }
 .cat-comfort     { background: rgba(80,250,123,0.18);  color: var(--green);  border: 1px solid rgba(80,250,123,0.35); }
 .cat-challenge   { background: rgba(255,85,85,0.18);   color: var(--red);    border: 1px solid rgba(255,85,85,0.35); }
 .cat-just_ranked { background: rgba(255,102,170,0.18); color: var(--pink);   border: 1px solid rgba(255,102,170,0.35); }
+.cat-skill_gap   { background: rgba(139,233,253,0.15); color: #8be9fd;        border: 1px solid rgba(139,233,253,0.35); }
+
+/* ── Recs toolbar (export button row) ──────── */
+.recs-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.2rem 0.5rem;
+}
+
+/* ── Audio preview button ───────────────────── */
+.btn-preview {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.65rem;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--transition);
+  padding: 0;
+}
+.btn-preview:hover { border-color: var(--pink); color: var(--pink); background: rgba(255,102,170,0.08); }
+.btn-preview.playing {
+  border-color: var(--pink);
+  color: var(--pink);
+  background: rgba(255,102,170,0.15);
+  animation: previewPulse 1.5s ease-in-out infinite;
+}
+@keyframes previewPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,102,170,0.35); }
+  50%       { box-shadow: 0 0 0 5px rgba(255,102,170,0); }
+}
+
+/* ── Liked Maps tab ─────────────────────────── */
+.liked-card {
+  border-color: rgba(255,102,170,0.2);
+}
+.liked-date {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Taste profile card ─────────────────────── */
+.taste-profile-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem 1.4rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+.taste-profile-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.taste-profile-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.taste-chart-wrap {
+  display: flex;
+  justify-content: center;
+}
+.taste-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+}
+
+/* ── Skill gap banner ───────────────────────── */
+.skill-gap-banner {
+  background: rgba(139,233,253,0.12);
+  border: 1px solid rgba(139,233,253,0.3);
+  border-radius: 20px;
+  color: #8be9fd;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.65rem;
+}
+
+/* ── Like / Interested button ─────────────── */
+.btn-like {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-family: var(--font-body);
+  padding: 0.28rem 0.6rem;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn-like:hover {
+  border-color: var(--pink);
+  color: var(--pink);
+  background: rgba(255,102,170,0.08);
+}
+.btn-like.btn-liked {
+  border-color: var(--pink);
+  color: var(--pink);
+  background: rgba(255,102,170,0.12);
+  font-weight: 600;
+}
+.btn-like.btn-liked:hover {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+  font-weight: 400;
+}
 
 /* ── Dismiss button ───────────────────────── */
 .btn-dismiss {

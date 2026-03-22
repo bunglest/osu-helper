@@ -5,6 +5,7 @@
 config.json
 profiles.json
 dismissed.json
+feedback.json
 
 # ─── ENVIRONMENT FILES ──────────────────────────────────────────────────────
 .env
