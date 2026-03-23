@@ -1,0 +1,37 @@
+﻿{
+    "hooks":  {
+                  "SessionStart":  [
+                                       {
+                                           "hooks":  [
+                                                         {
+                                                             "command":  "powershell -NoProfile -File \"C:/Users/bungl/Downloads/osu-helper/.dual-graph/prime.ps1\"",
+                                                             "type":  "command"
+                                                         }
+                                                     ],
+                                           "matcher":  ""
+                                       }
+                                   ],
+                  "Stop":  [
+                               {
+                                   "hooks":  [
+                                                 {
+                                                     "command":  "powershell -NoProfile -File \"C:/Users/bungl/Downloads/osu-helper/.dual-graph/stop_hook.ps1\"",
+                                                     "type":  "command"
+                                                 }
+                                             ],
+                                   "matcher":  ""
+                               }
+                           ],
+                  "PreCompact":  [
+                                     {
+                                         "hooks":  [
+                                                       {
+                                                           "command":  "powershell -NoProfile -File \"C:/Users/bungl/Downloads/osu-helper/.dual-graph/prime.ps1\"",
+                                                           "type":  "command"
+                                                       }
+                                                   ],
+                                         "matcher":  ""
+                                     }
+                                 ]
+              }
+}

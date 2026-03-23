@@ -10,12 +10,15 @@ let topPlays      = [];
 let currentRecs   = [];
 let recMode       = 'profile';
 let activeCat     = 'all';       // active category filter
+let activeStatus    = 'all';       // 'all' | 'ranked' | 'loved'
+let activeModFilter = '';          // '' = all mods, 'DT' = DT only, etc.
 let sseSource     = null;
 let meData        = null;       // result of /api/me
 let allProfiles   = [];         // local mode only
 let activeProfileId = null;
 let selectedMods  = [];         // mods chosen in settings UI
-let likedBmsIds   = new Set();  // beatmapset IDs the player has liked
+let likedBmsIds      = new Set();  // beatmapset IDs the player has liked
+let blockedMappers   = new Set();  // lowercase creator names the player has blocked
 
 const OAUTH_MODE = window.OAUTH_MODE === true;
 
@@ -49,8 +52,18 @@ async function bootstrap() {
     startSSE();
   }
 
-  await Promise.all([loadTopPlays(), loadUserInfo(), loadLikedIds()]);
+  await Promise.all([loadTopPlays(), loadUserInfo(), loadLikedIds(), loadBlockedMappers()]);
   loadRecommendations();
+}
+
+// ─── Blocked mappers loader ──────────────────
+async function loadBlockedMappers() {
+  try {
+    const r = await fetch('/api/blocked-mappers');
+    if (!r.ok) return;
+    const data = await r.json();
+    blockedMappers = new Set((data.blocked || []).map(s => s.toLowerCase()));
+  } catch (_) {}
 }
 
 // ─── Liked IDs loader ───────────────────────
@@ -579,6 +592,7 @@ function buildPlayCard(play, index) {
   <div class="play-footer">
     <span class="play-meta">${esc(version)} · ${date}</span>
     <div class="play-actions">
+      <button class="btn-preview" onclick="togglePreview(${bmsId}, this)" title="Preview audio">▶</button>
       <button class="btn btn-ghost btn-sm" onclick="loadRecsForPlay(${index})" title="Get recommendations similar to this map">🎯 Similar</button>
       <a href="https://osu.ppy.sh/b/${bmId}" target="_blank" class="btn btn-ghost btn-sm">View</a>
     </div>
@@ -589,12 +603,16 @@ function buildPlayCard(play, index) {
 // ─── Recommendations ────────────────────────
 async function loadRecommendations() {
   recMode = 'profile';
+  const modLabel = activeModFilter ? ` · ${activeModFilter} plays only` : '';
   document.getElementById('recs-title').textContent    = 'Recommendations';
-  document.getElementById('recs-subtitle').textContent = 'Based on your overall taste profile';
+  document.getElementById('recs-subtitle').textContent = `Based on your overall taste profile${modLabel}`;
   document.getElementById('recs-profile-btn').classList.add('active-mode');
   showRecsLoading();
   try {
-    const r    = await fetch('/api/recommendations');
+    const url = activeModFilter
+      ? `/api/recommendations?mod_filter=${encodeURIComponent(activeModFilter)}`
+      : '/api/recommendations';
+    const r    = await fetch(url);
     const data = await r.json();
     if (data.error) throw new Error(data.error);
     currentRecs = data.recommendations || [];
@@ -655,9 +673,17 @@ function renderRecs(recs) {
   const emptyCat = document.getElementById('recs-empty-cat');
   const grid = document.getElementById('recs-grid');
 
-  const filtered = activeCat === 'all'
+  let filtered = activeCat === 'all'
     ? recs
     : recs.filter(r => (r.category || 'best_match') === activeCat);
+  if (activeStatus !== 'all') {
+    filtered = filtered.filter(r => {
+      const s = (r.beatmapset?.status || '').toLowerCase();
+      if (activeStatus === 'ranked') return s === 'ranked' || s === 'approved';
+      if (activeStatus === 'loved')  return s === 'loved';
+      return true;
+    });
+  }
 
   if (!recs.length) {
     grid.classList.remove('hidden');
@@ -681,11 +707,26 @@ function renderRecs(recs) {
 // ─── Category tabs ────────────────────────────
 document.addEventListener('click', e => {
   const tab = e.target.closest('.cat-tab');
-  if (!tab) return;
-  activeCat = tab.dataset.cat;
-  document.querySelectorAll('.cat-tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.cat === activeCat));
-  renderRecs(currentRecs);
+  if (tab) {
+    activeCat = tab.dataset.cat;
+    document.querySelectorAll('.cat-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.cat === activeCat));
+    renderRecs(currentRecs);
+  }
+  const sbtn = e.target.closest('.status-btn');
+  if (sbtn) {
+    activeStatus = sbtn.dataset.status;
+    document.querySelectorAll('.status-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.status === activeStatus));
+    renderRecs(currentRecs);
+  }
+  const mpbtn = e.target.closest('.mod-profile-btn');
+  if (mpbtn) {
+    activeModFilter = mpbtn.dataset.modfilter;
+    document.querySelectorAll('.mod-profile-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.modfilter === activeModFilter));
+    loadRecommendations();
+  }
 });
 
 // ─── Dismiss ──────────────────────────────────
@@ -851,6 +892,7 @@ function buildRecCard(rec) {
     <a href="osu://b/${bmId}" class="btn-outline" title="Open in osu!">▶ Play</a>
     <button class="btn-like${likedBmsIds.has(bmsId) ? ' btn-liked' : ''}" onclick="likeRecById(${bmsId}, this)" title="Mark as interested">${likedBmsIds.has(bmsId) ? '♥ Interested' : '♡ Interested'}</button>
     <button class="btn-dismiss" onclick="dismissRecById(${bmsId}, this)" title="Not interested">✕ Not interested</button>
+    <button class="btn-dismiss" onclick="blockMapper(${JSON.stringify(bms.creator || '')}, this)" title="Block all maps by this mapper">⊘ Block mapper</button>
   </div>
 </div>`;
 }
@@ -858,6 +900,85 @@ function buildRecCard(rec) {
 function dismissRecById(bmsId, el) {
   const card = el?.closest('.rec-card');
   dismissRec(bmsId, card);
+}
+
+async function blockMapper(creator, el) {
+  const creatorLower = (creator || '').toLowerCase().trim();
+  if (!creatorLower) return;
+  try {
+    await fetch('/api/blocked-mappers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ creator: creatorLower }),
+    });
+    blockedMappers.add(creatorLower);
+    // Remove all rec cards by this mapper
+    currentRecs = currentRecs.filter(r => (r.beatmapset?.creator || '').toLowerCase() !== creatorLower);
+    renderRecs(currentRecs);
+    toast(`Blocked maps by ${creator}`, 'info');
+  } catch (e) {
+    toast('Could not block mapper', 'err');
+  }
+}
+
+// ─── Recommendation history ──────────────────
+async function loadHistory() {
+  const el = document.getElementById('history-list');
+  if (!el) return;
+  try {
+    const r    = await fetch('/api/history');
+    const data = await r.json();
+    const entries = data.history || [];
+    if (!entries.length) {
+      el.innerHTML = `<p style="font-size:.82rem;color:var(--text-muted)">No sessions yet — load recommendations to start tracking.</p>`;
+      return;
+    }
+    el.innerHTML = entries.map(e => {
+      const date = new Date(e.timestamp).toLocaleString();
+      const mods = (e.mod_filter || []).length ? ` · ${e.mod_filter.join('+')}` : '';
+      const maps = (e.maps || []).map(m =>
+        `<span class="history-map-chip" title="${esc(m.creator || '')}">${esc(m.title || '?')} <span class="history-sr">${m.sr ? parseFloat(m.sr).toFixed(1) + '★' : ''}</span></span>`
+      ).join('');
+      return `<div class="history-entry">
+        <div class="history-meta">${date}${mods} · ${e.count} maps</div>
+        <div class="history-maps">${maps}</div>
+      </div>`;
+    }).join('');
+  } catch (_) {
+    document.getElementById('history-list').innerHTML = `<p style="font-size:.82rem;color:var(--red)">Could not load history.</p>`;
+  }
+}
+
+// ─── Explore tab ────────────────────────────
+async function loadExploreRecs() {
+  const sr  = parseFloat(document.getElementById('explore-sr').value)  || 5.0;
+  const ar  = parseFloat(document.getElementById('explore-ar').value)  || 9.0;
+  const bpm = parseFloat(document.getElementById('explore-bpm').value) || 180;
+  const loading = document.getElementById('explore-loading');
+  const errEl   = document.getElementById('explore-error');
+  const grid    = document.getElementById('explore-grid');
+  loading?.classList.remove('hidden');
+  errEl?.classList.add('hidden');
+  grid?.classList.add('hidden');
+  try {
+    const params = new URLSearchParams({ sr, ar, bpm });
+    const r    = await fetch(`/api/recommendations/explore?${params}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    loading?.classList.add('hidden');
+    const recs = data.recommendations || [];
+    if (!recs.length) {
+      grid.classList.remove('hidden');
+      grid.innerHTML = `<div class="loading-state"><div class="error-icon">🔍</div><p>No maps found — try adjusting the values.</p></div>`;
+      return;
+    }
+    grid.innerHTML = recs.map(buildRecCard).join('');
+    grid?.classList.remove('hidden');
+  } catch (e) {
+    loading?.classList.add('hidden');
+    document.getElementById('explore-error-msg').textContent = e.message;
+    errEl?.classList.remove('hidden');
+  }
 }
 
 // ─── SSE ────────────────────────────────────
@@ -939,6 +1060,8 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(s => s.classList.toggle('active', s.id === `tab-${name}`));
   // Lazy-load the liked tab on first visit
   if (name === 'liked' && !likedTabLoaded) loadLikedTab();
+  // Lazy-load history when opening settings
+  if (name === 'settings') loadHistory();
   // Stop audio preview when navigating away
   if (name !== 'recs' && _audioEl) {
     _audioEl.pause(); _audioEl = null; _playingBmsId = null;
@@ -1022,6 +1145,7 @@ function _downloadText(filename, text) {
 // ─── Liked Maps Tab ──────────────────────────
 let likedTabLoaded = false;
 let _radarChart    = null;
+let _driftChart    = null;
 
 async function loadLikedTab() {
   likedTabLoaded = true;
@@ -1035,12 +1159,14 @@ async function loadLikedTab() {
   profile?.classList.add('hidden');
 
   try {
-    const [feedResp, statsResp] = await Promise.all([
+    const [feedResp, statsResp, snapResp] = await Promise.all([
       fetch('/api/feedback'),
       fetch('/api/profile-stats'),
+      fetch('/api/taste-snapshots'),
     ]);
     const feedData  = await feedResp.json();
     const statsData = statsResp.ok ? await statsResp.json() : null;
+    const snapData  = snapResp.ok  ? await snapResp.json() : null;
 
     const entries = feedData.entries || [];
     loading?.classList.add('hidden');
@@ -1059,6 +1185,13 @@ async function loadLikedTab() {
     if (statsData && !statsData.error) {
       renderTasteProfile(statsData);
       profile?.classList.remove('hidden');
+    }
+
+    // Render drift chart
+    const snapshots = snapData?.snapshots || [];
+    if (snapshots.length >= 2) {
+      renderDriftChart(snapshots);
+      document.getElementById('drift-chart-card')?.classList.remove('hidden');
     }
   } catch (e) {
     loading?.classList.add('hidden');
@@ -1176,6 +1309,75 @@ function renderTasteProfile(stats) {
   }
 }
 
+function renderDriftChart(snapshots) {
+  const ctx = document.getElementById('drift-chart');
+  if (!ctx) return;
+  if (_driftChart) { _driftChart.destroy(); _driftChart = null; }
+
+  const labels = snapshots.map(s => s.date);
+  const srData  = snapshots.map(s => s.sr);
+  const arData  = snapshots.map(s => s.ar);
+  const bpmData = snapshots.map(s => parseFloat((s.bpm / 10).toFixed(1)));
+
+  _driftChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Star Rating',
+          data: srData,
+          borderColor: 'rgba(255,102,170,0.9)',
+          backgroundColor: 'rgba(255,102,170,0.08)',
+          pointRadius: 3,
+          borderWidth: 2,
+          tension: 0.35,
+          fill: false,
+        },
+        {
+          label: 'AR',
+          data: arData,
+          borderColor: 'rgba(139,233,253,0.9)',
+          backgroundColor: 'rgba(139,233,253,0.08)',
+          pointRadius: 3,
+          borderWidth: 2,
+          tension: 0.35,
+          fill: false,
+        },
+        {
+          label: 'BPM÷10',
+          data: bpmData,
+          borderColor: 'rgba(255,184,108,0.9)',
+          backgroundColor: 'rgba(255,184,108,0.08)',
+          pointRadius: 3,
+          borderWidth: 2,
+          tension: 0.35,
+          fill: false,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          labels: { color: '#aaa', font: { size: 11 }, boxWidth: 12 },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: '#666', font: { size: 10 }, maxTicksLimit: 10 },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+        },
+        y: {
+          ticks: { color: '#888', font: { size: 10 } },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+        },
+      },
+    },
+  });
+}
+
 // Expose for inline onclick handlers
 window.loadTopPlays                  = loadTopPlays;
 window.loadRecommendations           = loadRecommendations;
@@ -1193,10 +1395,13 @@ window.openAddProfile                = openAddProfile;
 window.closeAddProfile               = closeAddProfile;
 window.submitAddProfile              = submitAddProfile;
 window.dismissRecById                = dismissRecById;
+window.blockMapper                   = blockMapper;
 window.likeRecById                   = likeRecById;
 window.unlikeFromTab                 = unlikeFromTab;
 window.togglePreview                 = togglePreview;
 window.exportRecs                    = exportRecs;
 window.exportLiked                   = exportLiked;
 window.loadLikedTab                  = loadLikedTab;
+window.loadExploreRecs               = loadExploreRecs;
+window.loadHistory                   = loadHistory;
 window.showConfirm                   = showConfirm;

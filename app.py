@@ -45,10 +45,13 @@ app = Flask(__name__,
             static_folder=os.path.join(BASE_DIR, "static"))
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
-CONFIG_FILE     = os.path.join(DATA_DIR, "config.json")
-PROFILES_FILE   = os.path.join(DATA_DIR, "profiles.json")
-DISMISSED_FILE  = os.path.join(DATA_DIR, "dismissed.json")
-FEEDBACK_FILE   = os.path.join(DATA_DIR, "feedback.json")
+CONFIG_FILE          = os.path.join(DATA_DIR, "config.json")
+PROFILES_FILE        = os.path.join(DATA_DIR, "profiles.json")
+DISMISSED_FILE       = os.path.join(DATA_DIR, "dismissed.json")
+FEEDBACK_FILE        = os.path.join(DATA_DIR, "feedback.json")
+BLOCKED_MAPPERS_FILE = os.path.join(DATA_DIR, "blocked_mappers.json")
+HISTORY_FILE         = os.path.join(DATA_DIR, "rec_history.json")
+SNAPSHOTS_FILE       = os.path.join(DATA_DIR, "taste_snapshots.json")
 OSU_API_BASE    = "https://osu.ppy.sh/api/v2"
 OSU_TOKEN_URL   = "https://osu.ppy.sh/oauth/token"
 OSU_AUTH_URL    = "https://osu.ppy.sh/oauth/authorize"
@@ -337,6 +340,98 @@ def load_feedback():
 def save_feedback(data: dict):
     with open(FEEDBACK_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def load_blocked_mappers() -> set:
+    """Return the set of blocked mapper names (lowercase)."""
+    if os.path.exists(BLOCKED_MAPPERS_FILE):
+        try:
+            with open(BLOCKED_MAPPERS_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return set(s.lower().strip() for s in data)
+        except Exception:
+            pass
+    return set()
+
+
+def save_blocked_mappers(names: set):
+    with open(BLOCKED_MAPPERS_FILE, "w") as f:
+        json.dump(sorted(names), f, indent=2)
+
+
+def load_history() -> list:
+    """Return the recommendation history list (most recent first, capped at 50)."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def save_history(entries: list):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(entries[:50], f, indent=2)
+
+
+def load_snapshots() -> list:
+    if os.path.exists(SNAPSHOTS_FILE):
+        try:
+            with open(SNAPSHOTS_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def save_snapshot(sr: float, ar: float, bpm: float, dominant_mods: list):
+    """Save a daily taste snapshot (one per day, newer overwrites same-day entry)."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    snaps = load_snapshots()
+    # Remove existing entry for today if present
+    snaps = [s for s in snaps if s.get("date") != today]
+    snaps.insert(0, {
+        "date":          today,
+        "sr":            round(sr, 2),
+        "ar":            round(ar, 2),
+        "bpm":           round(bpm, 1),
+        "dominant_mods": dominant_mods,
+    })
+    # Keep last 180 days
+    snaps = snaps[:180]
+    with open(SNAPSHOTS_FILE, "w") as f:
+        json.dump(snaps, f, indent=2)
+
+
+def append_history(recs: list, mod_filter=None):
+    """Append a new history entry from a recommendation result set."""
+    if not recs:
+        return
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "count": len(recs),
+        "mod_filter": mod_filter or [],
+        "maps": [
+            {
+                "title":   (r.get("beatmapset") or {}).get("title", "?"),
+                "creator": (r.get("beatmapset") or {}).get("creator", ""),
+                "sr":      (r.get("beatmap") or {}).get("difficulty_rating"),
+                "bms_id":  (r.get("beatmapset") or {}).get("id"),
+                "bm_id":   (r.get("beatmap") or {}).get("id"),
+                "category": r.get("category", "best_match"),
+            }
+            for r in recs[:6]
+        ],
+    }
+    history = load_history()
+    history.insert(0, entry)
+    save_history(history)
 
 
 def current_username():
@@ -992,7 +1087,8 @@ def _pack_bm(bm, bms):
 def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bms_ids,
                     rec_count=12, sr_center=5.0, ar_center=9.0, bpm_center=180,
                     search_tags=None, pp_target=None, preferred_mods=None,
-                    sr_min=None, sr_max=None, liked_vecs=None, disliked_vecs=None):
+                    sr_min=None, sr_max=None, liked_vecs=None, disliked_vecs=None,
+                    blocked_mappers=None):
     # Build the base query; wider windows give more candidates for the scorer to
     # rank rather than returning too few results because the range is too tight.
     diff_lo = max(sr_center - 1.3, sr_min if sr_min is not None else 0)
@@ -1033,10 +1129,12 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
         except Exception:
             pass
 
+    _blocked = blocked_mappers or set()
     results = []
     for bms in all_beatmapsets:
         if not isinstance(bms, dict): continue
         if bms.get("id") in played_bms_ids: continue
+        if (bms.get("creator") or "").lower().strip() in _blocked: continue
         for bm in bms.get("beatmaps", []):
             mode_int = bm.get("mode_int", bm.get("mode"))
             if mode_int != 0 and bm.get("mode") not in ("osu", "osu!"): continue
@@ -1067,7 +1165,7 @@ def _query_nerinyan(taste_vec, mapper_w, tag_w, type_w, played_bm_ids, played_bm
 
 def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
                       rec_count=8, sr_center=5.0, pp_target=None, preferred_mods=None,
-                      liked_vecs=None, disliked_vecs=None):
+                      liked_vecs=None, disliked_vecs=None, blocked_mappers=None):
     """
     Fallback search via the osu! API.  Uses the player's dominant map type
     as the search keyword so the results are style-relevant, not just popular.
@@ -1089,9 +1187,11 @@ def _query_osu_search(taste_vec, mapper_w, tag_w, type_w, played_bms_ids,
         beatmapsets = data.get("beatmapsets", [])
     except Exception:
         return []
+    _blocked = blocked_mappers or set()
     results = []
     for bms in beatmapsets:
         if bms.get("id") in played_bms_ids: continue
+        if (bms.get("creator") or "").lower().strip() in _blocked: continue
         for bm in bms.get("beatmaps", []):
             if bm.get("mode") != "osu": continue
             if abs(bm.get("difficulty_rating",0) - sr_center) > 1.5: continue
@@ -1188,7 +1288,7 @@ def _assign_category(r, sr_c):
     return "best_match"
 
 
-def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
+def get_recommendations_for_profile(top_plays, cfg, recent_plays=None, mod_filter=None):
     top_n     = cfg.get("top_n", 20)
     rec_count = cfg.get("rec_count", 12)
     sr_min    = cfg.get("sr_min")   # None or float
@@ -1199,6 +1299,20 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
     played_bm_ids  = {p["beatmap"]["id"] for p in top_plays if p.get("beatmap")}
     played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in top_plays if p.get("beatmap")}
 
+    # ── Mod filter: restrict taste profile to plays with specific mods ────────
+    # Plays are filtered but the full played_bm/bms_ids stay so we don't
+    # recommend maps the player has already set a score on regardless of mod.
+    if mod_filter:
+        mod_filter_set = {m.upper() for m in _normalise_acronyms(mod_filter)}
+        filtered_plays = [
+            p for p in top_plays
+            if mod_filter_set & _normalise_acronyms(p.get("mods", []))
+        ]
+        # Fall back to all plays if the filter yields too few
+        profile_plays = filtered_plays if len(filtered_plays) >= 5 else top_plays
+    else:
+        profile_plays = top_plays
+
     # ── Recent plays context blending ────────────────────────────────────────
     # Blend recent plays into the working play list (deduplicated) so that
     # whatever the player has been doing lately also influences the taste vector.
@@ -1207,13 +1321,13 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
         played_bm_ids |= recent_bm_ids
         played_bms_ids |= {p["beatmap"]["beatmapset_id"]
                            for p in recent_plays if p.get("beatmap")}
-        # Append recent plays that aren't already in top_plays (avoid duplicates
+        # Append recent plays that aren't already in profile_plays (avoid duplicates
         # by best_id so the same play isn't counted twice)
-        top_best_ids = {p.get("best_id") for p in top_plays}
+        top_best_ids = {p.get("best_id") for p in profile_plays}
         extra = [p for p in recent_plays if p.get("best_id") not in top_best_ids]
-        blended_plays = top_plays + extra
+        blended_plays = profile_plays + extra
     else:
-        blended_plays = top_plays
+        blended_plays = profile_plays
 
     taste_vec, mapper_w, tag_w, type_w = _build_user_context(blended_plays, top_n)
     if taste_vec is None:
@@ -1223,8 +1337,10 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
     # If the user has set a manual mod override use that; otherwise auto-detect.
     if manual_mods:
         dominant_combo = [m for m in _normalise_acronyms(manual_mods) if m in _SKILL_MODS]
+    elif mod_filter:
+        dominant_combo = [m for m in _normalise_acronyms(mod_filter) if m in _SKILL_MODS]
     else:
-        _, dominant_combo = _detect_preferred_mods(top_plays, top_n)
+        _, dominant_combo = _detect_preferred_mods(profile_plays, top_n)
 
     sr_adj  = float(taste_vec[0] * 10)
     ar_adj  = float(taste_vec[1] * 11)
@@ -1239,11 +1355,11 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
         sr_c = min(sr_c, float(sr_max))
 
     # PP threshold: the PP of the player's weakest top-100 play.
-    pps = sorted([float(p.get("pp") or 0) for p in top_plays if p.get("pp")], reverse=True)
+    pps = sorted([float(p.get("pp") or 0) for p in profile_plays if p.get("pp")], reverse=True)
     pp_target = pps[min(len(pps) - 1, 99)] if pps else None
 
     # Recurring beatmap tags used as a nerinyan search hint
-    search_tags = _top_beatmap_tags(top_plays, n=5, top_n=top_n) or None
+    search_tags = _top_beatmap_tags(profile_plays, n=5, top_n=top_n) or None
 
     # ── Load dismissed beatmapset IDs & vectors ───────────────────────────────
     dismissed_ids   = load_dismissed()
@@ -1252,6 +1368,9 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
     # ── Load liked-map context ────────────────────────────────────────────────
     feedback_data = load_feedback()
     liked_vecs    = _build_liked_context(feedback_data.get("liked", []))
+
+    # ── Load blocked mappers ──────────────────────────────────────────────────
+    blocked_mappers = load_blocked_mappers()
 
     # ── Multi-pass: comfort / current / challenge ─────────────────────────────
     all_recs = []
@@ -1271,6 +1390,7 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
             sr_max=sr_max,
             liked_vecs=liked_vecs,
             disliked_vecs=disliked_vecs,
+            blocked_mappers=blocked_mappers,
         )
         for r in band_recs:
             bid = r["beatmapset"]["id"]
@@ -1311,6 +1431,7 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
             preferred_mods=dominant_combo,
             sr_min=sr_min, sr_max=sr_max,
             liked_vecs=liked_vecs, disliked_vecs=disliked_vecs,
+            blocked_mappers=blocked_mappers,
         )
         for r in gap_recs:
             bid = r["beatmapset"]["id"]
@@ -1329,6 +1450,7 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None):
             preferred_mods=dominant_combo,
             liked_vecs=liked_vecs,
             disliked_vecs=disliked_vecs,
+            blocked_mappers=blocked_mappers,
         )
         for r in fallback:
             bid = r["beatmapset"]["id"]
@@ -1368,11 +1490,11 @@ def get_recommendations_for_play(play, top_plays, cfg):
                 if len(t) > 3 and t not in _NOISE]
     search_tags = raw_tags[:5] if raw_tags else None
 
-    dismissed_ids = load_dismissed()
-    disliked_vecs = _build_disliked_context(load_dismissed_vecs())
-
-    feedback_data = load_feedback()
-    liked_vecs    = _build_liked_context(feedback_data.get("liked", []))
+    dismissed_ids   = load_dismissed()
+    disliked_vecs   = _build_disliked_context(load_dismissed_vecs())
+    feedback_data   = load_feedback()
+    liked_vecs      = _build_liked_context(feedback_data.get("liked", []))
+    blocked_mappers = load_blocked_mappers()
 
     recs = _query_nerinyan(taste_vec, mapper_w, tag_w, type_w,
                            played_bm_ids, played_bms_ids, rec_count,
@@ -1380,7 +1502,8 @@ def get_recommendations_for_play(play, top_plays, cfg):
                            search_tags=search_tags,
                            preferred_mods=play_mods,
                            liked_vecs=liked_vecs,
-                           disliked_vecs=disliked_vecs)
+                           disliked_vecs=disliked_vecs,
+                           blocked_mappers=blocked_mappers)
     recs = [r for r in recs if r["beatmapset"]["id"] not in dismissed_ids]
     for r in recs:
         r.setdefault("category", "best_match")
@@ -1391,7 +1514,8 @@ def get_recommendations_for_play(play, top_plays, cfg):
                                      played_bms_ids, rec_count - len(recs), sr_c,
                                      preferred_mods=play_mods,
                                      liked_vecs=liked_vecs,
-                                     disliked_vecs=disliked_vecs)
+                                     disliked_vecs=disliked_vecs,
+                                     blocked_mappers=blocked_mappers)
         for r in fallback:
             bid = r["beatmapset"]["id"]
             if bid not in seen_ids and bid not in dismissed_ids:
@@ -1821,6 +1945,9 @@ def api_recommendations():
     if not username:
         return jsonify({"error": "Not logged in"}), 401
     cfg = load_config()
+    # Optional mod filter: comma-separated acronyms, e.g. ?mod_filter=DT,HR
+    raw_mod_filter = request.args.get("mod_filter", "").strip()
+    mod_filter = [m.strip().upper() for m in raw_mod_filter.split(",") if m.strip()] or None
     try:
         plays = _get_user_plays(username)
         if not plays:
@@ -1833,8 +1960,10 @@ def api_recommendations():
                 recent_plays = fetch_recent_plays(username, limit=30)
             except Exception:
                 recent_plays = None
-        recs = get_recommendations_for_profile(plays, cfg, recent_plays=recent_plays)
-        return jsonify({"recommendations": recs})
+        recs = get_recommendations_for_profile(plays, cfg, recent_plays=recent_plays,
+                                               mod_filter=mod_filter)
+        append_history(recs, mod_filter=mod_filter)
+        return jsonify({"recommendations": recs, "mod_filter": mod_filter or []})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1976,6 +2105,36 @@ def api_feedback_unlike(bms_id):
     return jsonify({"ok": True, "liked_count": len(data["liked"])})
 
 
+# ─────────────────────────────────────────────
+# Blocked mappers API
+# ─────────────────────────────────────────────
+
+@app.route("/api/blocked-mappers", methods=["GET"])
+def api_blocked_mappers_get():
+    return jsonify({"blocked": sorted(load_blocked_mappers())})
+
+
+@app.route("/api/blocked-mappers", methods=["POST"])
+def api_blocked_mappers_post():
+    body = request.get_json(force=True)
+    creator = (body.get("creator") or "").lower().strip()
+    if not creator:
+        return jsonify({"error": "creator required"}), 400
+    names = load_blocked_mappers()
+    names.add(creator)
+    save_blocked_mappers(names)
+    return jsonify({"ok": True, "blocked_count": len(names)})
+
+
+@app.route("/api/blocked-mappers/<path:creator>", methods=["DELETE"])
+def api_blocked_mappers_delete(creator):
+    creator = creator.lower().strip()
+    names = load_blocked_mappers()
+    names.discard(creator)
+    save_blocked_mappers(names)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/recommendations/for-play/<int:play_index>")
 def api_recommendations_for_play(play_index):
     username = current_username()
@@ -2035,12 +2194,88 @@ def api_profile_stats():
         gap_type = min(_LEARNABLE, key=lambda t: type_w.get(t, 0.0))
         gap_weight = type_w.get(gap_type, 0.0)
 
+        # Save a daily snapshot for the drift chart
+        try:
+            snap_sr  = round(float(taste_vec[0] * 10), 2)
+            snap_ar  = round(float(taste_vec[1] * 11), 2)
+            snap_bpm = round(float(taste_vec[4] * 400), 1)
+            save_snapshot(snap_sr, snap_ar, snap_bpm, dominant_combo)
+        except Exception:
+            pass
+
         return jsonify({
             "axes":          axes,
             "type_weights":  type_w,
             "dominant_mods": dominant_combo,
             "skill_gap":     gap_type if gap_weight < 0.25 else None,
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/taste-snapshots")
+def api_taste_snapshots():
+    snaps = load_snapshots()
+    # Return oldest-first for chart rendering
+    return jsonify({"snapshots": list(reversed(snaps))})
+
+
+@app.route("/api/history")
+def api_history():
+    return jsonify({"history": load_history()})
+
+
+@app.route("/api/recommendations/explore")
+def api_recommendations_explore():
+    """
+    Return recommendations for a manually-specified target (SR / AR / BPM).
+    Query params: sr, ar, bpm, status ('all'|'ranked'|'loved')
+    """
+    username = current_username()
+    if not username:
+        return jsonify({"error": "Not logged in"}), 401
+    cfg = load_config()
+    try:
+        sr  = float(request.args.get("sr",  5.0))
+        ar  = float(request.args.get("ar",  9.0))
+        bpm = float(request.args.get("bpm", 180.0))
+        sr  = max(1.0, min(sr, 15.0))
+        ar  = max(0.0, min(ar, 11.0))
+        bpm = max(60.0, min(bpm, 400.0))
+
+        plays = _get_user_plays(username)
+        if not plays:
+            plays = fetch_top_plays(username, 100)
+            _set_user_plays(username, plays)
+
+        played_bm_ids  = {p["beatmap"]["id"] for p in plays if p.get("beatmap")}
+        played_bms_ids = {p["beatmap"]["beatmapset_id"] for p in plays if p.get("beatmap")}
+
+        # Build a neutral taste vector from the given stats
+        dummy_bm = {
+            "difficulty_rating": sr, "ar": ar, "accuracy": 8.0, "cs": 4.0,
+            "bpm": bpm, "total_length": 120, "count_circles": 500,
+            "count_sliders": 200, "max_combo": 700,
+        }
+        taste_vec = _bm_to_vec(dummy_bm)
+
+        blocked_mappers = load_blocked_mappers()
+        disliked_vecs   = _build_disliked_context(load_dismissed_vecs())
+        liked_vecs      = _build_liked_context(load_feedback().get("liked", []))
+        dismissed_ids   = load_dismissed()
+
+        rec_count = cfg.get("rec_count", 12)
+        recs = _query_nerinyan(
+            taste_vec, {}, {}, {}, played_bm_ids, played_bms_ids, rec_count,
+            sr, ar, bpm,
+            pp_target=None, preferred_mods=[],
+            liked_vecs=liked_vecs, disliked_vecs=disliked_vecs,
+            blocked_mappers=blocked_mappers,
+        )
+        recs = [r for r in recs if r["beatmapset"]["id"] not in dismissed_ids]
+        for r in recs:
+            r.setdefault("category", "best_match")
+        return jsonify({"recommendations": recs})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

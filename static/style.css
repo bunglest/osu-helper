@@ -1241,8 +1241,122 @@ a:hover { color: var(--pink-light); text-decoration: underline; }
 /* ── Recs toolbar (export button row) ──────── */
 .recs-toolbar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   padding: 0 0.2rem 0.5rem;
+  gap: 0.5rem;
+}
+
+/* ── Status filter buttons ───────────────── */
+.status-filter {
+  display: flex;
+  gap: 0.3rem;
+}
+.status-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  font-family: var(--font-body);
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.status-btn:hover { color: var(--text); border-color: var(--border-hover); }
+.status-btn.active { background: rgba(255,102,170,0.15); color: var(--pink); border-color: rgba(255,102,170,0.4); }
+
+/* ── Mod profile filter ──────────────────── */
+.mod-profile-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.2rem 0.6rem;
+  flex-wrap: wrap;
+}
+.mod-filter-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-right: 0.1rem;
+}
+.mod-profile-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  font-family: var(--font-body);
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.mod-profile-btn:hover { color: var(--text); border-color: var(--border-hover); }
+.mod-profile-btn.active { background: rgba(189,147,249,0.15); color: var(--purple); border-color: rgba(189,147,249,0.4); }
+
+/* ── Recommendation history ─────────────── */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.history-entry {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+}
+.history-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+}
+.history-maps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.history-map-chip {
+  background: var(--bg4);
+  border-radius: var(--radius-xs);
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  cursor: default;
+}
+.history-sr {
+  color: var(--yellow);
+  font-weight: 700;
+  margin-left: 0.2rem;
+}
+
+/* ── Explore tab controls ────────────────── */
+.explore-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.explore-param {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.explore-param label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 /* ── Audio preview button ───────────────────── */

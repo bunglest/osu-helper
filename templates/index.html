@@ -97,6 +97,10 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Recommendations
       </button>
+      <button class="tab" data-tab="explore" role="tab" id="tab-btn-explore" aria-selected="false" aria-controls="tab-explore">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+        Explore
+      </button>
       <button class="tab" data-tab="liked" role="tab" id="tab-btn-liked" aria-selected="false" aria-controls="tab-liked">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
         Liked
@@ -243,6 +247,15 @@
         </button>
       </div>
     </div>
+    <!-- Mod profile filter -->
+    <div class="mod-profile-filter" id="mod-profile-filter" role="group" aria-label="Filter recommendations by mod">
+      <span class="mod-filter-label">Profile:</span>
+      <button class="mod-profile-btn active" data-modfilter="">All mods</button>
+      <button class="mod-profile-btn" data-modfilter="DT">DT only</button>
+      <button class="mod-profile-btn" data-modfilter="HR">HR only</button>
+      <button class="mod-profile-btn" data-modfilter="HD">HD only</button>
+      <button class="mod-profile-btn" data-modfilter="NM">NM only</button>
+    </div>
     <!-- Category filter tabs -->
     <div class="cat-tabs" id="cat-tabs" role="group" aria-label="Filter by category">
       <button class="cat-tab active" data-cat="all">All</button>
@@ -254,12 +267,54 @@
       <button class="cat-tab" data-cat="skill_gap">Skill Gap</button>
     </div>
     <div class="recs-toolbar">
+      <div class="status-filter" role="group" aria-label="Filter by status">
+        <button class="status-btn active" data-status="all">All</button>
+        <button class="status-btn" data-status="ranked">Ranked</button>
+        <button class="status-btn" data-status="loved">Loved</button>
+      </div>
       <button class="btn btn-ghost btn-sm" id="export-recs-btn" onclick="exportRecs()" title="Export recommendation list">↓ Export</button>
     </div>
     <div id="recs-loading" class="loading-state"><div class="spinner-lg" aria-hidden="true"></div><p>Generating recommendations…</p></div>
     <div id="recs-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="recs-error-msg">Could not load recommendations</p><button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">Retry</button></div>
     <div id="recs-empty-cat" class="empty-cat hidden" role="status">No recommendations in this category yet.</div>
     <div id="recs-grid" class="recs-grid hidden" aria-live="polite"></div>
+  </section>
+
+  <!-- ══ EXPLORE TAB ══ -->
+  <section id="tab-explore" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-explore">
+    <div class="section-header">
+      <div>
+        <h2>Explore</h2>
+        <p class="subtitle">Find maps by specifying target stats — no profile needed</p>
+      </div>
+    </div>
+    <div class="explore-controls">
+      <div class="explore-param">
+        <label for="explore-sr">Star Rating</label>
+        <div class="input-with-unit">
+          <input id="explore-sr" type="number" min="1" max="15" step="0.1" value="5.0" />
+          <span class="unit">★</span>
+        </div>
+      </div>
+      <div class="explore-param">
+        <label for="explore-ar">Approach Rate</label>
+        <div class="input-with-unit">
+          <input id="explore-ar" type="number" min="0" max="11" step="0.1" value="9.0" />
+          <span class="unit">AR</span>
+        </div>
+      </div>
+      <div class="explore-param">
+        <label for="explore-bpm">BPM</label>
+        <div class="input-with-unit">
+          <input id="explore-bpm" type="number" min="60" max="400" step="5" value="180" />
+          <span class="unit">BPM</span>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="loadExploreRecs()">Find Maps</button>
+    </div>
+    <div id="explore-loading" class="loading-state hidden"><div class="spinner-lg" aria-hidden="true"></div><p>Searching…</p></div>
+    <div id="explore-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="explore-error-msg">Something went wrong</p></div>
+    <div id="explore-grid" class="recs-grid hidden" aria-live="polite"></div>
   </section>
 
   <!-- ══ LIKED MAPS TAB ══ -->
@@ -284,6 +339,16 @@
         <canvas id="taste-radar" width="280" height="280" aria-label="Taste profile radar chart"></canvas>
       </div>
       <div id="taste-type-chips" class="taste-type-chips"></div>
+    </div>
+    <!-- Taste drift chart -->
+    <div id="drift-chart-card" class="taste-profile-card hidden" style="margin-top:1rem">
+      <div class="taste-profile-header">
+        <span class="taste-profile-title">Taste Drift Over Time</span>
+        <span style="font-size:.75rem;color:var(--text-muted)">SR · AR · BPM/10</span>
+      </div>
+      <div style="padding:0.5rem 0">
+        <canvas id="drift-chart" height="200" aria-label="Taste drift line chart"></canvas>
+      </div>
     </div>
     <!-- Liked map list -->
     <div id="liked-loading" class="loading-state hidden"><div class="spinner-lg" aria-hidden="true"></div><p>Loading liked maps…</p></div>
@@ -413,6 +478,14 @@
         </div>
       </div>
 
+      <!-- Recommendation history -->
+      <div class="settings-card">
+        <h3>Recommendation History</h3>
+        <p style="font-size:.83rem;color:var(--text-dim);margin-bottom:.75rem">Last 50 recommendation sessions</p>
+        <button class="btn btn-ghost btn-sm" onclick="loadHistory()" style="margin-bottom:.75rem">↻ Refresh</button>
+        <div id="history-list" class="history-list"></div>
+      </div>
+
     </div>
   </section>
 
@@ -427,6 +500,10 @@
   <button class="mobile-tab" data-tab="recs">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
     <span>Recs</span>
+  </button>
+  <button class="mobile-tab" data-tab="explore">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+    <span>Explore</span>
   </button>
   <button class="mobile-tab" data-tab="liked">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>

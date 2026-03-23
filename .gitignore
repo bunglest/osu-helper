@@ -77,3 +77,4 @@ logs/
 
 # ─── WINDOWS INSTALLER ARTIFACTS ─────────────────────────────────────────────
 Output/
+.dual-graph/
