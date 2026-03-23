@@ -795,39 +795,174 @@ function likeRecById(bmsId, el) {
   likeRec(bmsId, rec.beatmap || {}, rec.beatmapset || {}, btn);
 }
 
-let _audioEl = null;   // single shared audio element
+// ─── Mini Player ─────────────────────────────
+let _audioEl      = null;
 let _playingBmsId = null;
+let _seekDragging = false;
+
+function _getMapMeta(bmsId) {
+  // Look up title/artist/cover from currentRecs then topPlays
+  const fromRecs = currentRecs.find(r => (r.beatmapset || {}).id === bmsId);
+  if (fromRecs) {
+    const bms = fromRecs.beatmapset || {};
+    const covers = bms.covers || {};
+    return {
+      title:  bms.title  || '?',
+      artist: bms.artist || '',
+      cover:  covers['cover@2x'] || covers['cover'] ||
+              `https://assets.ppy.sh/beatmaps/${bmsId}/covers/cover.jpg`,
+    };
+  }
+  const fromPlays = topPlays.find(p => {
+    const bm = p.beatmap || {};
+    return (bm.beatmapset_id || (p.beatmapset || {}).id) === bmsId;
+  });
+  if (fromPlays) {
+    const bms = fromPlays.beatmapset || {};
+    return {
+      title:  bms.title  || '?',
+      artist: bms.artist || '',
+      cover:  `https://assets.ppy.sh/beatmaps/${bmsId}/covers/cover.jpg`,
+    };
+  }
+  return { title: 'Preview', artist: '', cover: '' };
+}
+
+function _showPlayerBar(bmsId) {
+  const meta = _getMapMeta(bmsId);
+  document.getElementById('player-cover').src     = meta.cover;
+  document.getElementById('player-title').textContent  = meta.title;
+  document.getElementById('player-artist').textContent = meta.artist;
+  document.getElementById('player-bar').classList.remove('hidden');
+  document.body.classList.add('player-active');
+  _updatePlayerButton(true);
+  document.getElementById('player-seek').value = 0;
+  document.getElementById('player-time').textContent = '0:00';
+}
+
+function _hidePlayerBar() {
+  document.getElementById('player-bar').classList.add('hidden');
+  document.body.classList.remove('player-active');
+}
+
+function _updatePlayerButton(playing) {
+  const btn = document.getElementById('player-playpause');
+  if (!btn) return;
+  btn.innerHTML = playing
+    ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`
+    : `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+}
+
+function _fmtSecs(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
 
 function togglePreview(bmsId, btnEl) {
   const previewUrl = `https://b.ppy.sh/preview/${bmsId}.mp3`;
-  if (_playingBmsId === bmsId) {
-    // Pause current
-    _audioEl?.pause();
-    _playingBmsId = null;
-    document.querySelectorAll('.btn-preview.playing').forEach(b => {
-      b.textContent = '▶'; b.classList.remove('playing');
-    });
+
+  if (_playingBmsId === bmsId && _audioEl) {
+    if (_audioEl.paused) {
+      _audioEl.play();
+      _updatePlayerButton(true);
+      document.querySelectorAll('.btn-preview').forEach(b => b.classList.remove('playing'));
+      if (btnEl) btnEl.classList.add('playing');
+    } else {
+      _audioEl.pause();
+      _updatePlayerButton(false);
+      if (btnEl) btnEl.classList.remove('playing');
+    }
     return;
   }
-  // Stop any other preview
+
+  // Stop previous
   if (_audioEl) { _audioEl.pause(); _audioEl = null; }
-  document.querySelectorAll('.btn-preview.playing').forEach(b => {
-    b.textContent = '▶'; b.classList.remove('playing');
-  });
+  document.querySelectorAll('.btn-preview').forEach(b => b.classList.remove('playing'));
+
   _audioEl = new Audio(previewUrl);
-  _audioEl.volume = 0.5;
-  _playingBmsId = bmsId;
-  btnEl.textContent = '■'; btnEl.classList.add('playing');
+  _audioEl.volume = (document.getElementById('player-volume')?.value ?? 50) / 100;
+  _playingBmsId   = bmsId;
+  if (btnEl) btnEl.classList.add('playing');
+
+  _audioEl.addEventListener('timeupdate', () => {
+    if (_seekDragging || !_audioEl) return;
+    const dur  = _audioEl.duration || 30;
+    const pct  = (_audioEl.currentTime / dur) * 100;
+    const seek = document.getElementById('player-seek');
+    const time = document.getElementById('player-time');
+    if (seek) seek.value = pct;
+    if (time) time.textContent = _fmtSecs(_audioEl.currentTime);
+  });
+
+  _audioEl.addEventListener('loadedmetadata', () => {
+    const dur = document.getElementById('player-duration');
+    if (dur && _audioEl) dur.textContent = _fmtSecs(_audioEl.duration);
+  });
+
+  _audioEl.addEventListener('ended', () => {
+    _updatePlayerButton(false);
+    document.querySelectorAll('.btn-preview').forEach(b => b.classList.remove('playing'));
+    const seek = document.getElementById('player-seek');
+    if (seek) seek.value = 0;
+    const time = document.getElementById('player-time');
+    if (time) time.textContent = '0:00';
+    _playingBmsId = null;
+  });
+
+  _showPlayerBar(bmsId);
   _audioEl.play().catch(() => {
     toast('Preview unavailable', 'info');
-    btnEl.textContent = '▶'; btnEl.classList.remove('playing');
+    _hidePlayerBar();
+    if (btnEl) btnEl.classList.remove('playing');
     _playingBmsId = null;
   });
-  _audioEl.onended = () => {
-    btnEl.textContent = '▶'; btnEl.classList.remove('playing');
-    _playingBmsId = null;
-  };
 }
+
+function playerToggle() {
+  if (!_audioEl) return;
+  if (_audioEl.paused) {
+    _audioEl.play();
+    _updatePlayerButton(true);
+    document.querySelectorAll(`[data-bmsid="${_playingBmsId}"] .btn-preview`).forEach(b => b.classList.add('playing'));
+  } else {
+    _audioEl.pause();
+    _updatePlayerButton(false);
+    document.querySelectorAll('.btn-preview').forEach(b => b.classList.remove('playing'));
+  }
+}
+
+function playerStop() {
+  if (_audioEl) { _audioEl.pause(); _audioEl = null; }
+  document.querySelectorAll('.btn-preview').forEach(b => b.classList.remove('playing'));
+  _playingBmsId = null;
+  _hidePlayerBar();
+}
+
+function playerSeek(pct) {
+  if (!_audioEl) return;
+  const dur = _audioEl.duration || 30;
+  _audioEl.currentTime = (pct / 100) * dur;
+  const time = document.getElementById('player-time');
+  if (time) time.textContent = _fmtSecs(_audioEl.currentTime);
+}
+
+function playerVolume(val) {
+  if (_audioEl) _audioEl.volume = val / 100;
+  const icon = document.getElementById('player-vol-icon');
+  if (!icon) return;
+  const v = parseInt(val);
+  if (v === 0) {
+    icon.innerHTML = `<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>`;
+  } else if (v < 50) {
+    icon.innerHTML = `<path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>`;
+  } else {
+    icon.innerHTML = `<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>`;
+  }
+}
+
+// Seek drag state
+document.addEventListener('mousedown', e => { if (e.target.id === 'player-seek') _seekDragging = true; });
+document.addEventListener('mouseup',   () => { _seekDragging = false; });
 
 function buildRecCard(rec) {
   const bms   = rec.beatmapset || {};
@@ -1062,13 +1197,7 @@ function switchTab(name) {
   if (name === 'liked' && !likedTabLoaded) loadLikedTab();
   // Lazy-load history when opening settings
   if (name === 'settings') loadHistory();
-  // Stop audio preview when navigating away
-  if (name !== 'recs' && _audioEl) {
-    _audioEl.pause(); _audioEl = null; _playingBmsId = null;
-    document.querySelectorAll('.btn-preview.playing').forEach(b => {
-      b.textContent = '▶'; b.classList.remove('playing');
-    });
-  }
+  // Player continues across tabs — no stop on tab switch
 }
 
 // ─── Toast ───────────────────────────────────
@@ -1399,6 +1528,10 @@ window.blockMapper                   = blockMapper;
 window.likeRecById                   = likeRecById;
 window.unlikeFromTab                 = unlikeFromTab;
 window.togglePreview                 = togglePreview;
+window.playerToggle                  = playerToggle;
+window.playerStop                    = playerStop;
+window.playerSeek                    = playerSeek;
+window.playerVolume                  = playerVolume;
 window.exportRecs                    = exportRecs;
 window.exportLiked                   = exportLiked;
 window.loadLikedTab                  = loadLikedTab;

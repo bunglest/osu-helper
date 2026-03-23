@@ -1388,6 +1388,185 @@ a:hover { color: var(--pink-light); text-decoration: underline; }
   50%       { box-shadow: 0 0 0 5px rgba(255,102,170,0); }
 }
 
+/* ── Mini Player Bar ────────────────────────── */
+.player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 68px;
+  background: rgba(14, 14, 26, 0.96);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid var(--border-hover);
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0 1.25rem;
+  z-index: 200;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.45);
+  transition: transform 0.25s ease;
+}
+.player-bar.hidden {
+  transform: translateY(100%);
+  display: flex !important; /* keep in flow so transition works */
+  pointer-events: none;
+}
+.player-cover {
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg3);
+}
+.player-info {
+  min-width: 0;
+  flex-shrink: 0;
+  width: 180px;
+}
+.player-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-artist {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.player-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.player-btn {
+  background: rgba(255,102,170,0.15);
+  border: 1px solid rgba(255,102,170,0.35);
+  border-radius: 50%;
+  color: var(--pink);
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  padding: 0;
+  flex-shrink: 0;
+}
+.player-btn:hover {
+  background: rgba(255,102,170,0.28);
+  border-color: var(--pink);
+  box-shadow: 0 0 0 3px rgba(255,102,170,0.15);
+}
+.player-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+.player-time, .player-duration {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 32px;
+}
+.player-duration { text-align: right; }
+.player-seek {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg4);
+  outline: none;
+  cursor: pointer;
+}
+.player-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pink);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.player-seek:hover::-webkit-slider-thumb { transform: scale(1.3); }
+.player-seek::-moz-range-thumb {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--pink);
+  border: none;
+  cursor: pointer;
+}
+.player-volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.player-volume {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg4);
+  outline: none;
+  cursor: pointer;
+}
+.player-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  cursor: pointer;
+}
+.player-volume::-moz-range-thumb {
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  border: none;
+}
+.player-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.3rem;
+  border-radius: var(--radius-xs);
+  transition: color var(--transition);
+  flex-shrink: 0;
+}
+.player-close:hover { color: var(--red); }
+
+/* Push page content up so player bar doesn't overlap */
+body.player-active { padding-bottom: 68px; }
+body.player-active .mobile-nav { bottom: 68px; }
+@media (max-width: 600px) {
+  .player-info { display: none; }
+  .player-volume-wrap { display: none; }
+}
+
 /* ── Liked Maps tab ─────────────────────────── */
 .liked-card {
   border-color: rgba(255,102,170,0.2);
