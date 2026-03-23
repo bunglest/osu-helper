@@ -1065,6 +1065,7 @@ def _pack_bms(bms):
         "covers": bms.get("covers",{}), "ranked": bms.get("ranked"),
         "status": bms.get("status",""), "bpm": bms.get("bpm"),
         "tags": bms.get("tags",""),
+        "ranked_date": bms.get("ranked_date") or bms.get("submitted_date") or "",
     }
 
 def _pack_bm(bm, bms):
@@ -1373,9 +1374,12 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None, mod_filte
     blocked_mappers = load_blocked_mappers()
 
     # ── Multi-pass: comfort / current / challenge ─────────────────────────────
+    # Band offset → base category: deterministic so every band fills its tab.
+    # Within the main band (offset 0) we still check for just_ranked / pp_farm.
+    _BAND_CATS = {-0.5: "comfort", 0.0: "best_match", 0.7: "challenge"}
     all_recs = []
     seen_ids = set()
-    for sr_offset in (-0.5, 0.0, 0.7):
+    for sr_offset, base_cat in _BAND_CATS.items():
         sr_band = sr_c + sr_offset
         if sr_band < 1.0:
             continue
@@ -1396,7 +1400,22 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None, mod_filte
             bid = r["beatmapset"]["id"]
             if bid not in seen_ids and bid not in dismissed_ids:
                 seen_ids.add(bid)
-                r["category"] = _assign_category(r, sr_c)
+                # Refine the base category for just_ranked / pp_farm signals
+                cat = base_cat
+                ranked_str = (r.get("beatmapset") or {}).get("ranked_date") or ""
+                if ranked_str:
+                    try:
+                        ranked_days = (datetime.now(timezone.utc) -
+                                       datetime.fromisoformat(
+                                           ranked_str.replace("Z", "+00:00"))).days
+                        if ranked_days < 60:
+                            cat = "just_ranked"
+                    except Exception:
+                        pass
+                if cat == base_cat and base_cat in ("best_match", "comfort") and \
+                        "pp" in (r.get("reason") or "").lower():
+                    cat = "pp_farm"
+                r["category"] = cat
                 all_recs.append(r)
 
     all_recs.sort(key=lambda x: x["score"], reverse=True)
@@ -1456,7 +1475,20 @@ def get_recommendations_for_profile(top_plays, cfg, recent_plays=None, mod_filte
             bid = r["beatmapset"]["id"]
             if bid not in seen_ids and bid not in dismissed_ids:
                 seen_ids.add(bid)
-                r["category"] = _assign_category(r, sr_c)
+                cat = "best_match"
+                ranked_str = (r.get("beatmapset") or {}).get("ranked_date") or ""
+                if ranked_str:
+                    try:
+                        ranked_days = (datetime.now(timezone.utc) -
+                                       datetime.fromisoformat(
+                                           ranked_str.replace("Z", "+00:00"))).days
+                        if ranked_days < 60:
+                            cat = "just_ranked"
+                    except Exception:
+                        pass
+                if cat == "best_match" and "pp" in (r.get("reason") or "").lower():
+                    cat = "pp_farm"
+                r["category"] = cat
                 all_recs.append(r)
 
     return _diversify(all_recs, rec_count)
