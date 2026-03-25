@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>osu!helper</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
   <script>window.OAUTH_MODE = {{ 'true' if oauth_mode else 'false' }};</script>
 </head>
@@ -16,6 +16,7 @@
   <div class="bg-orb bg-orb-1"></div>
   <div class="bg-orb bg-orb-2"></div>
   <div class="bg-orb bg-orb-3"></div>
+  <div class="bg-grid"></div>
 </div>
 
 <!-- ───── TOAST NOTIFICATIONS ───── -->
@@ -30,7 +31,7 @@
       <p>Log in with your osu! account to get personalised beatmap recommendations based on your top plays.</p>
     </div>
     <a href="/auth/login" class="btn btn-primary btn-full login-osu-btn">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#1a1a2e"/></svg>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="#0a0a1a"/></svg>
       Login with osu!
     </a>
     <p class="login-note">Your credentials are never stored — we only remember your username.</p>
@@ -74,7 +75,7 @@
       <span class="new-play-label">New Top Play!</span>
       <span id="new-play-title">...</span>
     </div>
-    <button id="new-play-view-btn" class="btn btn-sm btn-pink">View Recs</button>
+    <button id="new-play-view-btn" class="btn btn-sm btn-accent">View Recs</button>
     <button id="new-play-close" class="btn-close" aria-label="Dismiss notification">✕</button>
   </div>
 </div>
@@ -98,12 +99,16 @@
         Recommendations
       </button>
       <button class="tab" data-tab="explore" role="tab" id="tab-btn-explore" aria-selected="false" aria-controls="tab-explore">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         Explore
       </button>
       <button class="tab" data-tab="liked" role="tab" id="tab-btn-liked" aria-selected="false" aria-controls="tab-liked">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
         Liked
+      </button>
+      <button class="tab" data-tab="taste" role="tab" id="tab-btn-taste" aria-selected="false" aria-controls="tab-taste">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+        Taste Profile
       </button>
       <button class="tab" data-tab="settings" role="tab" id="tab-btn-settings" aria-selected="false" aria-controls="tab-settings">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
@@ -126,7 +131,6 @@
         </div>
         <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
       </button>
-
       <div id="profile-menu" class="profile-menu hidden" role="menu" aria-label="Profile list">
         <div class="profile-menu-header">Profiles</div>
         <div id="profile-menu-list"></div>
@@ -204,6 +208,24 @@
   </div>
 </div>
 
+<!-- ───── TASTE FEEDBACK MODAL ───── -->
+<div id="taste-feedback-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="taste-feedback-title">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="taste-feedback-title">Suggest a correction</h2>
+      <p>Tell us why you think your taste profile doesn't match your actual preferences.</p>
+    </div>
+    <div class="form-group">
+      <label for="taste-feedback-text">Your feedback</label>
+      <textarea id="taste-feedback-text" rows="4" placeholder="e.g. I mostly play stream maps but my profile shows aim as dominant..." style="width:100%;background:var(--bg4);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:0.62rem 0.9rem;font-size:0.9rem;font-family:var(--font-body);resize:vertical;outline:none;"></textarea>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:.5rem">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeTasteFeedback()">Cancel</button>
+      <button class="btn btn-primary" style="flex:1" onclick="submitTasteFeedback()">Submit Feedback</button>
+    </div>
+  </div>
+</div>
+
 <!-- ───── MAIN ───── -->
 <main class="main" id="main-content">
 
@@ -214,10 +236,20 @@
         <h2>Top Plays</h2>
         <p class="subtitle" id="plays-subtitle">Showing your best scores</p>
       </div>
-      <button id="refresh-plays-btn" class="btn btn-ghost btn-sm" aria-label="Refresh top plays">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-        Refresh
-      </button>
+      <div class="section-header-actions">
+        <div class="view-toggle" role="group" aria-label="View mode">
+          <button class="view-btn active" data-view="grid" title="Grid view" aria-label="Grid view">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8v8H3V3zm0 10h8v8H3v-8zm10-10h8v8h-8V3zm0 10h8v8h-8v-8z"/></svg>
+          </button>
+          <button class="view-btn" data-view="list" title="List view" aria-label="List view">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+          </button>
+        </div>
+        <button id="refresh-plays-btn" class="btn btn-ghost btn-sm" aria-label="Refresh top plays">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh
+        </button>
+      </div>
     </div>
     <div id="plays-loading" class="loading-state"><div class="spinner-lg" aria-hidden="true"></div><p>Loading top plays…</p></div>
     <div id="plays-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="plays-error-msg">Something went wrong</p><button class="btn btn-ghost btn-sm" onclick="loadTopPlays()">Retry</button></div>
@@ -247,18 +279,40 @@
         </button>
       </div>
     </div>
-    <!-- Mod profile filter -->
-    <div class="mod-profile-filter" id="mod-profile-filter" role="group" aria-label="Filter recommendations by mod">
-      <span class="mod-filter-label">Profile:</span>
-      <button class="mod-profile-btn active" data-modfilter="">All mods</button>
-      <button class="mod-profile-btn" data-modfilter="DT">DT only</button>
-      <button class="mod-profile-btn" data-modfilter="HR">HR only</button>
-      <button class="mod-profile-btn" data-modfilter="HD">HD only</button>
-      <button class="mod-profile-btn" data-modfilter="NM">NM only</button>
+
+    <!-- Mod toggles for recommendations -->
+    <div class="recs-mod-bar" id="recs-mod-bar" role="group" aria-label="Toggle mods for recommendations">
+      <span class="mod-bar-label">Mods:</span>
+      <button class="rec-mod-toggle" data-mod="DT" aria-pressed="false">
+        <span class="mod-key">DT</span>
+        <span class="mod-name">Double Time</span>
+      </button>
+      <button class="rec-mod-toggle" data-mod="HD" aria-pressed="false">
+        <span class="mod-key">HD</span>
+        <span class="mod-name">Hidden</span>
+      </button>
+      <button class="rec-mod-toggle" data-mod="HR" aria-pressed="false">
+        <span class="mod-key">HR</span>
+        <span class="mod-name">Hard Rock</span>
+      </button>
+      <button class="rec-mod-toggle" data-mod="FL" aria-pressed="false">
+        <span class="mod-key">FL</span>
+        <span class="mod-name">Flashlight</span>
+      </button>
+      <button class="rec-mod-toggle" data-mod="EZ" aria-pressed="false">
+        <span class="mod-key">EZ</span>
+        <span class="mod-name">Easy</span>
+      </button>
     </div>
+
     <!-- Category filter tabs -->
     <div class="cat-tabs" id="cat-tabs" role="group" aria-label="Filter by category">
       <button class="cat-tab active" data-cat="all">All</button>
+      <button class="cat-tab" data-cat="aim">Aim</button>
+      <button class="cat-tab" data-cat="streams">Streams</button>
+      <button class="cat-tab" data-cat="alt">Alt</button>
+      <button class="cat-tab" data-cat="tech">Tech</button>
+      <button class="cat-tab" data-cat="speed">Speed</button>
       <button class="cat-tab" data-cat="best_match">Best Match</button>
       <button class="cat-tab" data-cat="pp_farm">PP Farm</button>
       <button class="cat-tab" data-cat="comfort">Comfort</button>
@@ -266,6 +320,7 @@
       <button class="cat-tab" data-cat="just_ranked">Just Ranked</button>
       <button class="cat-tab" data-cat="skill_gap">Skill Gap</button>
     </div>
+
     <div class="recs-toolbar">
       <div class="status-filter" role="group" aria-label="Filter by status">
         <button class="status-btn active" data-status="all">All</button>
@@ -274,6 +329,7 @@
       </div>
       <button class="btn btn-ghost btn-sm" id="export-recs-btn" onclick="exportRecs()" title="Export recommendation list">↓ Export</button>
     </div>
+
     <div id="recs-loading" class="loading-state"><div class="spinner-lg" aria-hidden="true"></div><p>Generating recommendations…</p></div>
     <div id="recs-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="recs-error-msg">Could not load recommendations</p><button class="btn btn-ghost btn-sm" onclick="loadRecommendations()">Retry</button></div>
     <div id="recs-empty-cat" class="empty-cat hidden" role="status">No recommendations in this category yet.</div>
@@ -285,33 +341,92 @@
     <div class="section-header">
       <div>
         <h2>Explore</h2>
-        <p class="subtitle">Find maps by specifying target stats — no profile needed</p>
+        <p class="subtitle">Find maps that grant the most PP for your skillset</p>
       </div>
     </div>
-    <div class="explore-controls">
-      <div class="explore-param">
-        <label for="explore-sr">Star Rating</label>
-        <div class="input-with-unit">
-          <input id="explore-sr" type="number" min="1" max="15" step="0.1" value="5.0" />
-          <span class="unit">★</span>
+
+    <div class="explore-panel">
+      <!-- Skill Category -->
+      <div class="explore-section">
+        <label class="explore-label">Skill Category</label>
+        <div class="explore-skill-cats" role="group" aria-label="Skill category filter">
+          <button class="skill-cat-btn active" data-skill="all">All</button>
+          <button class="skill-cat-btn" data-skill="aim">Aim</button>
+          <button class="skill-cat-btn" data-skill="streams">Streams</button>
+          <button class="skill-cat-btn" data-skill="alt">Alt</button>
+          <button class="skill-cat-btn" data-skill="tech">Tech</button>
+          <button class="skill-cat-btn" data-skill="speed">Speed</button>
+          <button class="skill-cat-btn" data-skill="reading">Reading</button>
+          <button class="skill-cat-btn" data-skill="finger-control">Finger Control</button>
         </div>
       </div>
-      <div class="explore-param">
-        <label for="explore-ar">Approach Rate</label>
-        <div class="input-with-unit">
-          <input id="explore-ar" type="number" min="0" max="11" step="0.1" value="9.0" />
-          <span class="unit">AR</span>
+
+      <!-- Mods -->
+      <div class="explore-section">
+        <label class="explore-label">Mods</label>
+        <div class="explore-mods" role="group" aria-label="Mod filter">
+          <button class="explore-mod-btn active" data-mod="">No Mod</button>
+          <button class="explore-mod-btn" data-mod="DT">DT</button>
+          <button class="explore-mod-btn" data-mod="HD">HD</button>
+          <button class="explore-mod-btn" data-mod="HR">HR</button>
+          <button class="explore-mod-btn" data-mod="FL">FL</button>
+          <button class="explore-mod-btn" data-mod="EZ">EZ</button>
         </div>
       </div>
-      <div class="explore-param">
-        <label for="explore-bpm">BPM</label>
-        <div class="input-with-unit">
-          <input id="explore-bpm" type="number" min="60" max="400" step="5" value="180" />
-          <span class="unit">BPM</span>
+
+      <!-- Star Rating Range Slider -->
+      <div class="explore-section">
+        <label class="explore-label">Star Rating</label>
+        <div class="range-slider-container">
+          <div class="range-inputs">
+            <input type="number" id="explore-sr-min" class="range-input" min="0" max="15" step="0.1" value="3.0" placeholder="Min" aria-label="Minimum star rating" />
+            <span class="range-sep">to</span>
+            <input type="number" id="explore-sr-max" class="range-input" min="0" max="15" step="0.1" value="7.0" placeholder="Max" aria-label="Maximum star rating" />
+            <span class="range-unit">★</span>
+          </div>
+          <div class="dual-slider" id="sr-slider">
+            <div class="slider-track"></div>
+            <div class="slider-range"></div>
+            <input type="range" class="slider-thumb thumb-min" min="0" max="150" value="30" />
+            <input type="range" class="slider-thumb thumb-max" min="0" max="150" value="70" />
+          </div>
         </div>
       </div>
-      <button class="btn btn-primary" onclick="loadExploreRecs()">Find Maps</button>
+
+      <!-- BPM Range Slider -->
+      <div class="explore-section">
+        <label class="explore-label">BPM</label>
+        <div class="range-slider-container">
+          <div class="range-inputs">
+            <input type="number" id="explore-bpm-min" class="range-input" min="60" max="400" step="5" value="120" placeholder="Min" aria-label="Minimum BPM" />
+            <span class="range-sep">to</span>
+            <input type="number" id="explore-bpm-max" class="range-input" min="60" max="400" step="5" value="240" placeholder="Max" aria-label="Maximum BPM" />
+            <span class="range-unit">BPM</span>
+          </div>
+          <div class="dual-slider" id="bpm-slider">
+            <div class="slider-track"></div>
+            <div class="slider-range"></div>
+            <input type="range" class="slider-thumb thumb-min" min="60" max="400" value="120" />
+            <input type="range" class="slider-thumb thumb-max" min="60" max="400" value="240" />
+          </div>
+        </div>
+      </div>
+
+      <!-- AR (kept for API compat) -->
+      <div class="explore-section">
+        <label class="explore-label">Approach Rate</label>
+        <div class="range-inputs" style="max-width:180px">
+          <input type="number" id="explore-ar" class="range-input" min="0" max="11" step="0.1" value="9.0" placeholder="AR" aria-label="Approach Rate" />
+          <span class="range-unit">AR</span>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-find-maps" onclick="loadExploreRecs()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        Find Maps
+      </button>
     </div>
+
     <div id="explore-loading" class="loading-state hidden"><div class="spinner-lg" aria-hidden="true"></div><p>Searching…</p></div>
     <div id="explore-error" class="error-state hidden" role="alert"><div class="error-icon" aria-hidden="true">⚠️</div><p id="explore-error-msg">Something went wrong</p></div>
     <div id="explore-grid" class="recs-grid hidden" aria-live="polite"></div>
@@ -322,47 +437,130 @@
     <div class="section-header">
       <div>
         <h2>Liked Maps</h2>
-        <p class="section-sub" id="liked-subtitle">Maps you've marked as Interested</p>
+        <p class="subtitle" id="liked-subtitle">Maps you've marked as Interested</p>
       </div>
       <div class="section-actions">
         <button class="btn btn-ghost btn-sm" onclick="exportLiked()" title="Export liked maps">↓ Export</button>
         <button class="btn btn-ghost btn-sm" onclick="loadLikedTab()" title="Refresh">↻ Refresh</button>
       </div>
     </div>
-    <!-- Taste profile summary -->
-    <div id="taste-profile-card" class="taste-profile-card hidden">
-      <div class="taste-profile-header">
-        <span class="taste-profile-title">Your Taste Profile</span>
-        <span id="skill-gap-badge" class="skill-gap-banner hidden"></span>
-      </div>
-      <div class="taste-chart-wrap">
-        <canvas id="taste-radar" width="280" height="280" aria-label="Taste profile radar chart"></canvas>
-      </div>
-      <div id="taste-type-chips" class="taste-type-chips"></div>
-    </div>
-    <!-- Taste drift chart -->
-    <div id="drift-chart-card" class="taste-profile-card hidden" style="margin-top:1rem">
-      <div class="taste-profile-header">
-        <span class="taste-profile-title">Taste Drift Over Time</span>
-        <span style="font-size:.75rem;color:var(--text-muted)">SR · AR · BPM/10</span>
-      </div>
-      <div style="padding:0.5rem 0">
-        <canvas id="drift-chart" height="200" aria-label="Taste drift line chart"></canvas>
-      </div>
-    </div>
-    <!-- Liked map list -->
     <div id="liked-loading" class="loading-state hidden"><div class="spinner-lg" aria-hidden="true"></div><p>Loading liked maps…</p></div>
     <div id="liked-empty" class="empty-state hidden" role="status">
       <div class="empty-icon" aria-hidden="true">♡</div>
       <div class="empty-title">No liked maps yet</div>
-      <div class="empty-sub">Hit <strong>♡ Interested</strong> on a recommendation to start building your taste profile.</div>
+      <div class="empty-sub">Hit <strong>♡ Interested</strong> on a recommendation to start building your collection.</div>
     </div>
     <div id="liked-grid" class="recs-grid hidden" aria-live="polite"></div>
+  </section>
+
+  <!-- ══ TASTE PROFILE TAB ══ -->
+  <section id="tab-taste" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-taste">
+    <div class="section-header">
+      <div>
+        <h2>Your Taste Profile</h2>
+        <p class="subtitle">A detailed breakdown of your playing preferences</p>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="openTasteFeedback()" title="Suggest correction">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 12h-2v-2h2v2zm0-4h-2V6h2v4z"/></svg>
+        Suggest Correction
+      </button>
+    </div>
+
+    <!-- Taste Radar & Stats -->
+    <div class="taste-grid">
+      <div class="taste-card taste-radar-card">
+        <h3 class="taste-card-title">Skill Radar</h3>
+        <div class="taste-chart-wrap">
+          <canvas id="taste-radar" width="300" height="300" aria-label="Taste profile radar chart"></canvas>
+        </div>
+        <div id="taste-type-chips" class="taste-type-chips"></div>
+      </div>
+
+      <div class="taste-card taste-breakdown-card">
+        <h3 class="taste-card-title">Why This Profile?</h3>
+        <div id="taste-breakdown" class="taste-breakdown">
+          <p class="taste-loading-text">Load your liked maps to see your taste breakdown...</p>
+        </div>
+        <div id="taste-example-maps" class="taste-example-maps"></div>
+        <span id="skill-gap-badge" class="skill-gap-banner hidden"></span>
+      </div>
+    </div>
+
+    <!-- Taste Drift Chart -->
+    <div id="drift-chart-card" class="taste-card hidden" style="margin-top:1.25rem">
+      <h3 class="taste-card-title">Taste Drift Over Time</h3>
+      <span class="taste-card-sub">SR · AR · BPM/10</span>
+      <div style="padding:0.5rem 0">
+        <canvas id="drift-chart" height="200" aria-label="Taste drift line chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Tinder-like Swipe Feature -->
+    <div class="taste-swipe-section">
+      <h3 class="taste-card-title" style="margin-bottom:0.5rem">Discover Maps</h3>
+      <p class="subtitle" style="margin-bottom:1rem">Swipe right to try a map, left to skip. This helps refine your taste profile.</p>
+      <div id="swipe-container" class="swipe-container">
+        <div id="swipe-card" class="swipe-card">
+          <div class="swipe-card-inner">
+            <div class="swipe-cover">
+              <img id="swipe-cover-img" src="" alt="" />
+              <div class="swipe-cover-overlay"></div>
+              <div class="swipe-stars" id="swipe-stars">★ 0.00</div>
+            </div>
+            <div class="swipe-body">
+              <div class="swipe-title" id="swipe-title">Loading...</div>
+              <div class="swipe-artist" id="swipe-artist">—</div>
+              <div class="swipe-attrs" id="swipe-attrs"></div>
+              <div class="swipe-types" id="swipe-types"></div>
+            </div>
+          </div>
+          <div class="swipe-indicator swipe-yes" id="swipe-yes">TRY IT</div>
+          <div class="swipe-indicator swipe-no" id="swipe-no">SKIP</div>
+        </div>
+      </div>
+      <div class="swipe-actions">
+        <button class="swipe-btn swipe-btn-no" onclick="swipeAction('left')" aria-label="Skip this map">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <button class="swipe-btn swipe-btn-preview" onclick="previewSwipeMap()" aria-label="Preview audio">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button class="swipe-btn swipe-btn-yes" onclick="swipeAction('right')" aria-label="Try this map">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        </button>
+      </div>
+    </div>
   </section>
 
   <!-- ══ SETTINGS TAB ══ -->
   <section id="tab-settings" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-settings">
     <div class="settings-container">
+
+      <!-- Global Difficulty Slider -->
+      <div class="settings-card settings-card-highlight">
+        <h3>Global Difficulty Filter</h3>
+        <p class="settings-card-desc">This applies across all pages. Only maps within this range will be shown.</p>
+        <div class="global-sr-slider">
+          <div class="range-slider-container">
+            <div class="range-inputs">
+              <input type="number" id="global-sr-min" class="range-input" min="0" max="20" step="0.1" placeholder="Min" aria-label="Global minimum star rating" />
+              <span class="range-sep">to</span>
+              <input type="number" id="global-sr-max" class="range-input" min="0" max="20" step="0.1" placeholder="Max" aria-label="Global maximum star rating" />
+              <span class="range-unit">★</span>
+            </div>
+            <div class="dual-slider" id="global-sr-slider">
+              <div class="slider-track"></div>
+              <div class="slider-range"></div>
+              <input type="range" class="slider-thumb thumb-min" min="0" max="200" value="0" />
+              <input type="range" class="slider-thumb thumb-max" min="0" max="200" value="200" />
+            </div>
+          </div>
+        </div>
+        <div class="settings-actions" style="margin-top:1rem">
+          <button class="btn btn-primary btn-sm" onclick="saveGlobalDifficulty()">Apply Filter</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearGlobalDifficulty()">Clear</button>
+        </div>
+      </div>
 
       <!-- Profiles section (local mode only) -->
       <div id="profiles-card" class="settings-card hidden">
@@ -433,7 +631,6 @@
       <!-- Recommendation preferences -->
       <div class="settings-card">
         <h3>Recommendation Preferences</h3>
-
         <div class="form-group">
           <label>Mod Override <span class="field-hint-inline">(leave blank to auto-detect from plays)</span></label>
           <div class="mod-toggles" id="mod-toggles" role="group" aria-label="Mod selection">
@@ -448,22 +645,6 @@
         </div>
 
         <div class="form-group">
-          <label>Difficulty Range</label>
-          <div class="sr-range-row">
-            <div class="input-with-unit">
-              <input id="settings-sr-min" type="number" min="0" max="20" step="0.1" placeholder="—" aria-label="Minimum star rating floor" />
-              <span class="unit">★ floor</span>
-            </div>
-            <span class="sr-range-sep">to</span>
-            <div class="input-with-unit">
-              <input id="settings-sr-max" type="number" min="0" max="20" step="0.1" placeholder="—" aria-label="Maximum star rating ceiling" />
-              <span class="unit">★ ceiling</span>
-            </div>
-          </div>
-          <p class="field-hint">Leave blank to use no hard limit. Maps outside this range are excluded from recommendations.</p>
-        </div>
-
-        <div class="form-group">
           <label class="toggle-label">
             <input type="checkbox" id="settings-use-recent" />
             <span class="toggle-track" aria-hidden="true"></span>
@@ -475,6 +656,15 @@
         <div class="settings-actions">
           <button class="btn btn-primary" onclick="saveRecPrefs()">Save Preferences</button>
           <span id="recprefs-save-ok" class="save-ok hidden" role="status">✓ Saved</span>
+        </div>
+      </div>
+
+      <!-- Swipe History -->
+      <div class="settings-card">
+        <h3>Swipe History</h3>
+        <p class="settings-card-desc">Maps you've approved or skipped in the taste discovery feature. You can change your mind here.</p>
+        <div id="swipe-history-list" class="swipe-history-list">
+          <p style="font-size:.82rem;color:var(--text-muted)">No swipe history yet — try the Discover Maps feature in your Taste Profile.</p>
         </div>
       </div>
 
@@ -502,12 +692,16 @@
     <span>Recs</span>
   </button>
   <button class="mobile-tab" data-tab="explore">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
     <span>Explore</span>
   </button>
   <button class="mobile-tab" data-tab="liked">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
     <span>Liked</span>
+  </button>
+  <button class="mobile-tab" data-tab="taste">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+    <span>Taste</span>
   </button>
   <button class="mobile-tab" data-tab="settings">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
@@ -536,7 +730,7 @@
   </div>
   <div class="player-volume-wrap">
     <svg id="player-vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-    <input id="player-volume" type="range" min="0" max="100" value="50" class="player-volume" aria-label="Volume" oninput="playerVolume(this.value)" />
+    <input id="player-volume" type="range" min="0" max="100" value="30" class="player-volume" aria-label="Volume" oninput="playerVolume(this.value)" />
   </div>
   <button class="player-close" onclick="playerStop()" aria-label="Stop and close player">✕</button>
 </div>
