@@ -1,1712 +1,1908 @@
-// ============================================================================
-// osu! Beatmap Recommendation App - Complete JavaScript Implementation
-// ============================================================================
+/* ═══════════════════════════════════════════════════════════════════
+   osu!helper — Frontend Application
+   Complete rewrite matching index.html element IDs and CSS classes
+   ═══════════════════════════════════════════════════════════════════ */
 
-'use strict';
+(function () {
+  "use strict";
 
-// STATE VARIABLES
-let topPlays = [];
-let currentRecs = [];
-let recMode = 'profile';
-let activeCat = 'all';
-let activeStatus = 'all';
-let activeModFilter = '';
-let sseSource = null;
-let meData = null;
-let allProfiles = [];
-let activeProfileId = null;
-let selectedMods = [];
-let likedBmsIds = new Set();
-let blockedMappers = new Set();
-let playsViewMode = 'grid'; // 'grid' or 'list'
-let recsSelectedMods = []; // mods toggled in the recs mod bar
-let swipeQueue = []; // maps for the tinder swipe
-let swipeHistory = []; // history of swipe decisions
-let globalSrMin = null;
-let globalSrMax = null;
-let currentSwipeIndex = 0;
-let likedTabLoaded = false;
-let tasteTabLoaded = false;
-let _radarChart = null;
-let _driftChart = null;
+  /* ─── State ─────────────────────────────────────────────────── */
+  let currentTab = "plays";
+  let playsData = [];
+  let recsData = [];
+  let exploreData = [];
+  let likedIds = new Set();
+  let dismissedIds = new Set();
+  let blockedMappers = new Set();
+  let meData = null;
+  let activeCat = "all";
+  let activeStatusFilter = "all";
+  let activeRecMods = [];
+  let recMode = "profile"; // "profile" or "play"
+  let recPlayIndex = null;
+  let playsView = "grid";
+  let likedTabLoaded = false;
+  let tasteTabLoaded = false;
+  let _radarChart = null;
+  let _driftChart = null;
+  let _sseSource = null;
+  let swipeQueue = [];
+  let swipeIdx = 0;
+  let activeExploreSkill = "all";
+  let activeExploreMod = "";
 
-const OAUTH_MODE = window.OAUTH_MODE === true;
+  /* ─── Audio Player State ────────────────────────────────────── */
+  let _audio = null;
+  let _audioPlaying = false;
+  let _audioBmsId = null;
+  let _audioRaf = null;
 
-// MOD INCOMPATIBILITY MAP
-const MOD_INCOMPATIBLE = {
-  'HR': ['EZ'],
-  'EZ': ['HR'],
-  'DT': ['HT'],
-  'HT': ['DT'],
-};
+  /* ─── DOM Helpers ───────────────────────────────────────────── */
+  const $ = (id) => document.getElementById(id);
+  const $q = (sel) => document.querySelector(sel);
+  const $qa = (sel) => document.querySelectorAll(sel);
 
-// ============================================================================
-// INITIALIZATION
-// ============================================================================
+  /* ─── Utilities ─────────────────────────────────────────────── */
 
-document.addEventListener('DOMContentLoaded', async () => {
-  setupTabs();
-  checkAuthError();
-  await bootstrap();
-});
-
-async function bootstrap() {
-  try {
-    meData = await fetchMe();
-
-    if (OAUTH_MODE) {
-      if (!meData.logged_in) {
-        showOAuthLogin();
-        return;
-      }
-      showOAuthUserChip(meData);
-      hideOAuthLogin();
-      populateSettings(meData);
-    } else {
-      hideOAuthLogin();
-      if (!meData.has_credentials) {
-        showSetupOverlay();
-        return;
-      }
-      hideSetupOverlay();
-      await loadProfiles();
-      populateSettings(meData);
-      startSSE();
-    }
-
-    await Promise.all([
-      loadTopPlays(),
-      loadUserInfo(),
-      loadLikedIds(),
-      loadBlockedMappers()
-    ]);
-    loadCurrentRecommendations();
-
-    // Initialize explore sliders when tab is accessed
+  function toast(msg, type = "info") {
+    const container = $("toast-container");
+    if (!container) return;
+    const el = document.createElement("div");
+    const typeMap = { success: "ok", error: "err", info: "info" };
+    el.className = `toast toast-${typeMap[type] || type}`;
+    el.textContent = msg;
+    container.appendChild(el);
+    requestAnimationFrame(() => el.classList.add("show"));
     setTimeout(() => {
-      initDualSlider('#sr-slider', 'explore-sr-min', 'explore-sr-max', 0, 15, 0.1);
-      initDualSlider('#bpm-slider', 'explore-bpm-min', 'explore-bpm-max', 60, 400, 5);
-      initDualSlider('#global-sr-slider', 'global-sr-min', 'global-sr-max', 0, 20, 0.1);
-    }, 100);
-
-    setupRecsModBar();
-  } catch (err) {
-    console.error('Bootstrap error:', err);
+      el.classList.remove("show");
+      setTimeout(() => el.remove(), 400);
+    }, 3200);
   }
-}
 
-function checkAuthError() {
-  const params = new URLSearchParams(window.location.search);
-  const authError = params.get('auth_error');
-  if (authError) {
-    toast('Auth Error: ' + authError, 'error');
-    window.history.replaceState({}, document.title, window.location.pathname);
+  /** Star-rating → CSS class matching style.css .stars-1 … .stars-7 */
+  function starColorClass(sr) {
+    if (sr < 2) return "stars-1";
+    if (sr < 2.7) return "stars-2";
+    if (sr < 4) return "stars-3";
+    if (sr < 5.3) return "stars-4";
+    if (sr < 6.5) return "stars-5";
+    if (sr < 8) return "stars-6";
+    return "stars-7";
   }
-}
 
-// ============================================================================
-// API CALLS
-// ============================================================================
+  function rankColor(rank) {
+    const m = { SS: "#ffe566", S: "#ffcc22", A: "#88dd55", B: "#66bbff", C: "#dd88ff", D: "#ff6666" };
+    return m[rank] || m[rank?.replace("H", "")] || "#aaa";
+  }
 
-async function fetchMe() {
-  try {
-    const r = await fetch('/api/me');
-    return await r.json();
-  } catch (_) { return {}; }
-}
+  function formatLength(secs) {
+    if (!secs) return "0:00";
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
 
-async function loadUserInfo() {
-  try {
-    const r = await fetch('/api/user-info');
-    if (!r.ok) return;
-    const data = await r.json();
-    // Can update UI with user stats if needed
-  } catch (_) {}
-}
+  function formatTime(secs) {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
 
-async function loadLikedIds() {
-  try {
-    const r = await fetch('/api/feedback');
-    if (!r.ok) return;
-    const data = await r.json();
-    likedBmsIds = new Set((data.liked || []).map(Number));
-  } catch (_) {}
-}
+  function coverUrl(bms, size = "cover") {
+    if (bms?.covers?.[size]) return bms.covers[size];
+    if (bms?.covers?.["cover"]) return bms.covers["cover"];
+    if (bms?.id) return `https://assets.ppy.sh/beatmaps/${bms.id}/covers/${size}.jpg`;
+    return "";
+  }
 
-async function loadBlockedMappers() {
-  try {
-    const r = await fetch('/api/blocked-mappers');
-    if (!r.ok) return;
-    const data = await r.json();
-    blockedMappers = new Set((data.blocked || []).map(s => s.toLowerCase()));
-  } catch (_) {}
-}
+  function previewAudioUrl(bmsId) {
+    return `https://b.ppy.sh/preview/${bmsId}.mp3`;
+  }
 
-// ============================================================================
-// OAUTH & LOCAL MODE UI
-// ============================================================================
+  function renderTypeBadges(types) {
+    if (!types || !Array.isArray(types) || types.length === 0) return "";
+    return types
+      .map((t) => {
+        const cls = "type-" + t.toLowerCase().replace(/\s+/g, "-");
+        return `<span class="type-badge ${cls}">${t}</span>`;
+      })
+      .join("");
+  }
 
-function showOAuthLogin() {
-  document.getElementById('oauth-login-screen')?.classList.remove('hidden');
-}
-function hideOAuthLogin() {
-  document.getElementById('oauth-login-screen')?.classList.add('hidden');
-}
-function showOAuthUserChip(me) {
-  const chip = document.getElementById('oauth-user-chip');
-  if (!chip) return;
-  document.getElementById('oauth-avatar').src = me.avatar_url || '';
-  document.getElementById('oauth-username').textContent = me.username || '—';
-  document.getElementById('oauth-pp').textContent =
-    me.pp ? `${Math.round(me.pp).toLocaleString()}pp` : '—';
-  chip.classList.remove('hidden');
-}
+  function calcModifiedStats(bm, mods) {
+    if (!mods || !Array.isArray(mods)) return { ar: bm.ar, bpm: bm.bpm, sr: bm.difficulty_rating };
+    let ar = bm.ar || 0;
+    let bpm = bm.bpm || 0;
+    let sr = bm.difficulty_rating || 0;
+    if (mods.includes("DT") || mods.includes("NC")) {
+      bpm = Math.round(bpm * 1.5);
+      const ms = ar <= 5 ? 1800 - 120 * ar : 1200 - 150 * (ar - 5);
+      const newMs = ms / 1.5;
+      ar = newMs > 1200 ? (1800 - newMs) / 120 : 5 + (1200 - newMs) / 150;
+      ar = Math.min(11, Math.round(ar * 100) / 100);
+    }
+    if (mods.includes("HT")) {
+      bpm = Math.round(bpm * 0.75);
+    }
+    if (mods.includes("HR")) {
+      ar = Math.min(10, ar * 1.4);
+      ar = Math.round(ar * 100) / 100;
+    }
+    if (mods.includes("EZ")) {
+      ar = ar / 2;
+    }
+    return { ar, bpm, sr };
+  }
 
-function showSetupOverlay() {
-  document.getElementById('setup-overlay')?.classList.remove('hidden');
-}
-function hideSetupOverlay() {
-  document.getElementById('setup-overlay')?.classList.add('hidden');
-}
+  function modIncompat(current, mod) {
+    const pairs = { HR: "EZ", EZ: "HR", DT: "HT", HT: "DT" };
+    return pairs[mod] && current.includes(pairs[mod]);
+  }
 
-document.getElementById('setup-btn')?.addEventListener('click', async () => {
-  const username = document.getElementById('setup-username')?.value.trim();
-  const cid = document.getElementById('setup-client-id')?.value.trim();
-  const csec = document.getElementById('setup-client-secret')?.value.trim();
-  const errEl = document.getElementById('setup-error');
-  const btnText = document.getElementById('setup-btn-text');
-  const spinner = document.getElementById('setup-spinner');
+  function escHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s || "";
+    return d.innerHTML;
+  }
 
-  if (!errEl || !btnText || !spinner) return;
+  /* ─── Tab Navigation ────────────────────────────────────────── */
 
-  errEl.classList.add('hidden');
-  btnText.textContent = 'Connecting…';
-  spinner.classList.remove('hidden');
-
-  const r = await fetch('/api/test-credentials', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: cid, client_secret: csec, username }),
-  });
-  const data = await r.json();
-
-  if (data.ok) {
-    await fetch('/api/profiles', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username, display_name: username, client_id: cid, client_secret: csec,
-      }),
+  function setupTabs() {
+    // Desktop tabs
+    $qa(".tab[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
     });
-    hideSetupOverlay();
-    await bootstrap();
-  } else {
-    errEl.textContent = data.error || 'Authentication failed';
-    errEl.classList.remove('hidden');
-  }
-
-  btnText.textContent = 'Connect to osu!';
-  spinner.classList.add('hidden');
-});
-
-// ============================================================================
-// PROFILES (LOCAL MODE)
-// ============================================================================
-
-async function loadProfiles() {
-  if (OAUTH_MODE) return;
-  try {
-    const r = await fetch('/api/profiles');
-    const data = await r.json();
-    allProfiles = data.profiles || [];
-    activeProfileId = data.active_id;
-    renderProfileSwitcher();
-    renderProfilesList();
-
-    document.getElementById('profile-switcher')?.classList.remove('hidden');
-    document.getElementById('profiles-card')?.classList.remove('hidden');
-    document.getElementById('credentials-card')?.classList.remove('hidden');
-
-    const active = allProfiles.find(p => p.id === activeProfileId) || {};
-    const usernameField = document.getElementById('settings-username');
-    const cidField = document.getElementById('settings-client-id');
-    if (usernameField) usernameField.value = active.username || '';
-    if (cidField) cidField.value = active.client_id || '';
-  } catch (_) {
-    toast('Could not load profiles', 'error');
-  }
-}
-
-function renderProfileSwitcher() {
-  const active = allProfiles.find(p => p.id === activeProfileId) || {};
-  const avatar = document.getElementById('profile-avatar');
-  const name = document.getElementById('profile-chip-name');
-  const pp = document.getElementById('profile-chip-pp');
-
-  if (avatar) avatar.src = active.avatar_url || '';
-  if (name) name.textContent = active.display_name || active.username || '—';
-  if (pp) pp.textContent = active.pp ? `${Math.round(active.pp).toLocaleString()}pp` : '—pp';
-
-  const list = document.getElementById('profile-menu-list');
-  if (!list) return;
-  list.innerHTML = allProfiles.map(p => `
-    <button class="profile-menu-item ${p.id === activeProfileId ? 'active' : ''}" data-profile-id="${p.id}">
-      <img src="${esc(p.avatar_url || '')}" class="profile-menu-avatar">
-      <span>${esc(p.display_name || p.username || '?')}</span>
-    </button>
-  `).join('');
-
-  list.querySelectorAll('.profile-menu-item').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const pid = btn.getAttribute('data-profile-id');
-      await activateProfile(pid);
+    // Mobile tabs
+    $qa(".mobile-tab[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
     });
-  });
-}
+  }
 
-function renderProfilesList() {
-  const list = document.getElementById('profiles-table');
-  if (!list) return;
+  function switchTab(tab) {
+    currentTab = tab;
+    // Update desktop tab buttons
+    $qa(".tab[data-tab]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === tab);
+      b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
+    });
+    // Update mobile tab buttons
+    $qa(".mobile-tab[data-tab]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === tab);
+    });
+    // Show/hide tab panels
+    $qa(".tab-content").forEach((p) => {
+      p.classList.toggle("active", p.id === `tab-${tab}`);
+    });
+    // Lazy-load tab data
+    if (tab === "plays" && playsData.length === 0) loadTopPlays();
+    if (tab === "recs" && recsData.length === 0) loadRecommendations();
+    if (tab === "liked" && !likedTabLoaded) loadLikedTab();
+    if (tab === "taste" && !tasteTabLoaded) loadTasteProfile();
+    if (tab === "settings") populateSettings();
+  }
 
-  list.innerHTML = allProfiles.map(p => `
-    <div class="profile-row">
-      <img src="${esc(p.avatar_url || '')}" class="profile-row-avatar">
-      <div class="profile-info">
-        <div class="profile-name">${esc(p.display_name || p.username || '?')}</div>
-        <div class="profile-meta">${esc(p.username || '?')} • ${Math.round(p.pp || 0).toLocaleString()}pp</div>
+  /* ─── Audio Mini Player ─────────────────────────────────────── */
+
+  function initPlayer() {
+    _audio = new Audio();
+    _audio.volume = 0.3;
+    _audio.addEventListener("ended", () => stopPlayer());
+    _audio.addEventListener("error", () => {
+      toast("Could not load audio preview", "error");
+      stopPlayer();
+    });
+  }
+
+  function playPreview(bmsId, title, artist, coverSrc) {
+    if (!_audio) initPlayer();
+    const bar = $("player-bar");
+    if (_audioBmsId === bmsId && _audioPlaying) {
+      togglePlayer();
+      return;
+    }
+    _audioBmsId = bmsId;
+    _audio.src = previewAudioUrl(bmsId);
+    _audio.currentTime = 0;
+    _audio.play().catch(() => {});
+    _audioPlaying = true;
+    // Update UI
+    $("player-cover").src = coverSrc || "";
+    $("player-title").textContent = title || "—";
+    $("player-artist").textContent = artist || "—";
+    bar.classList.remove("hidden");
+    updatePlayPauseIcon(true);
+    startSeekUpdate();
+  }
+
+  function togglePlayer() {
+    if (!_audio) return;
+    if (_audioPlaying) {
+      _audio.pause();
+      _audioPlaying = false;
+      updatePlayPauseIcon(false);
+      cancelAnimationFrame(_audioRaf);
+    } else {
+      _audio.play().catch(() => {});
+      _audioPlaying = true;
+      updatePlayPauseIcon(true);
+      startSeekUpdate();
+    }
+  }
+
+  function stopPlayer() {
+    if (_audio) {
+      _audio.pause();
+      _audio.src = "";
+    }
+    _audioPlaying = false;
+    _audioBmsId = null;
+    cancelAnimationFrame(_audioRaf);
+    const bar = $("player-bar");
+    if (bar) bar.classList.add("hidden");
+  }
+
+  function updatePlayPauseIcon(playing) {
+    const btn = $("player-playpause");
+    if (!btn) return;
+    btn.innerHTML = playing
+      ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+      : '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  }
+
+  function startSeekUpdate() {
+    cancelAnimationFrame(_audioRaf);
+    function tick() {
+      if (!_audio || !_audioPlaying) return;
+      const dur = _audio.duration || 30;
+      const cur = _audio.currentTime || 0;
+      const seek = $("player-seek");
+      if (seek) seek.value = (cur / dur) * 100;
+      const timeEl = $("player-time");
+      if (timeEl) timeEl.textContent = formatTime(cur);
+      const durEl = $("player-duration");
+      if (durEl) durEl.textContent = formatTime(dur);
+      _audioRaf = requestAnimationFrame(tick);
+    }
+    _audioRaf = requestAnimationFrame(tick);
+  }
+
+  // Global functions for inline onclick handlers
+  window.playerToggle = togglePlayer;
+  window.playerStop = stopPlayer;
+  window.playerSeek = function (val) {
+    if (!_audio) return;
+    const dur = _audio.duration || 30;
+    _audio.currentTime = (val / 100) * dur;
+  };
+  window.playerVolume = function (val) {
+    if (!_audio) initPlayer();
+    _audio.volume = val / 100;
+  };
+
+  /* ─── View Toggle ───────────────────────────────────────────── */
+
+  function setupViewToggle() {
+    $qa(".view-btn[data-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const view = btn.dataset.view;
+        playsView = view;
+        $qa(".view-btn[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+        const grid = $("plays-grid");
+        if (grid) {
+          grid.classList.toggle("list-view", view === "list");
+        }
+      });
+    });
+  }
+
+  /* ─── Top Plays ─────────────────────────────────────────────── */
+
+  function loadTopPlays() {
+    const loading = $("plays-loading");
+    const error = $("plays-error");
+    const empty = $("plays-empty");
+    const grid = $("plays-grid");
+    if (loading) loading.classList.remove("hidden");
+    if (error) error.classList.add("hidden");
+    if (empty) empty.classList.add("hidden");
+    if (grid) grid.classList.add("hidden");
+
+    fetch("/api/top-plays")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (loading) loading.classList.add("hidden");
+        if (data.error) throw new Error(data.error);
+        playsData = data.plays || [];
+        if (playsData.length === 0) {
+          if (empty) empty.classList.remove("hidden");
+          return;
+        }
+        renderPlays();
+        if (grid) grid.classList.remove("hidden");
+        $("plays-subtitle").textContent = `Your top ${playsData.length} scores`;
+      })
+      .catch((err) => {
+        if (loading) loading.classList.add("hidden");
+        const msg = $("plays-error-msg");
+        if (msg) msg.textContent = err.message || "Something went wrong";
+        if (error) error.classList.remove("hidden");
+      });
+  }
+  window.loadTopPlays = loadTopPlays;
+
+  function renderPlays() {
+    const grid = $("plays-grid");
+    if (!grid) return;
+    grid.innerHTML = "";
+    playsData.forEach((play, idx) => {
+      grid.appendChild(buildPlayCard(play, idx));
+    });
+    if (playsView === "list") grid.classList.add("list-view");
+  }
+
+  function buildPlayCard(play, idx) {
+    const bm = play.beatmap || {};
+    const bms = play.beatmapset || {};
+    const sr = bm.difficulty_rating || 0;
+    const cover = coverUrl(bms);
+    const rank = play.rank || "?";
+    const pp = play.pp ? Math.round(play.pp) : "—";
+    const acc = play.accuracy != null ? (play.accuracy * 100).toFixed(2) : "—";
+    const mods = play.mods || [];
+    const types = bm.map_types || [];
+
+    const card = document.createElement("div");
+    card.className = "play-card";
+    card.innerHTML = `
+      <div class="play-cover" style="background-image:url('${escHtml(cover)}')">
+        <div class="play-cover-overlay"></div>
+        <span class="play-rank-badge" style="color:${rankColor(rank)}">${escHtml(rank)}</span>
+        <button class="play-preview-btn" title="Preview audio" aria-label="Preview audio">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
       </div>
-      <div class="profile-actions">
-        <button class="btn-delete-profile" data-profile-id="${p.id}">Delete</button>
+      <div class="play-body">
+        <div class="play-title" title="${escHtml(bms.title)} [${escHtml(bm.version)}]">
+          ${escHtml(bms.title)} <span class="play-diff">[${escHtml(bm.version)}]</span>
+        </div>
+        <div class="play-artist">${escHtml(bms.artist)} // ${escHtml(bms.creator)}</div>
+        <div class="play-stats">
+          <span class="stat-pill ${starColorClass(sr)}">★ ${sr.toFixed(2)}</span>
+          <span class="stat-pill">AR ${bm.ar || 0}</span>
+          <span class="stat-pill">BPM ${bm.bpm || 0}</span>
+          <span class="stat-pill">${formatLength(bm.total_length)}</span>
+          ${mods.length ? `<span class="stat-pill mod-pill">+${mods.join("")}</span>` : ""}
+        </div>
+        ${types.length ? `<div class="play-types">${renderTypeBadges(types)}</div>` : ""}
       </div>
-    </div>
-  `).join('');
-
-  list.querySelectorAll('.btn-delete-profile').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const pid = btn.getAttribute('data-profile-id');
-      if (confirm('Delete this profile?')) {
-        await deleteProfile(pid);
-      }
-    });
-  });
-}
-
-async function activateProfile(pid) {
-  try {
-    await fetch(`/api/profiles/${pid}/activate`, { method: 'POST' });
-    activeProfileId = pid;
-    await loadProfiles();
-    await loadTopPlays();
-    await loadCurrentRecommendations();
-    toast('Profile activated', 'success');
-  } catch (_) {
-    toast('Error activating profile', 'error');
-  }
-}
-
-async function deleteProfile(pid) {
-  try {
-    await fetch(`/api/profiles/${pid}`, { method: 'DELETE' });
-    await loadProfiles();
-    toast('Profile deleted', 'success');
-  } catch (_) {
-    toast('Error deleting profile', 'error');
-  }
-}
-
-// ============================================================================
-// SETTINGS
-// ============================================================================
-
-function populateSettings(me) {
-  document.getElementById('settings-top-n')?.setAttribute('value', me.top_n || 50);
-  document.getElementById('settings-poll-interval')?.setAttribute('value', me.poll_interval || 60);
-  document.getElementById('settings-rec-count')?.setAttribute('value', me.rec_count || 10);
-  document.getElementById('settings-sr-min')?.setAttribute('value', me.sr_min || 0);
-  document.getElementById('settings-sr-max')?.setAttribute('value', me.sr_max || 15);
-
-  // Preferred mods
-  const modCheckboxes = document.querySelectorAll('[data-mod-checkbox]');
-  const prefMods = (me.preferred_mods || '').split(',').map(m => m.trim()).filter(m => m);
-  modCheckboxes.forEach(cb => {
-    const mod = cb.getAttribute('data-mod-checkbox');
-    cb.checked = prefMods.includes(mod);
-  });
-
-  document.getElementById('settings-use-recent')?.setAttribute('checked', me.use_recent_plays ? '' : null);
-
-  // Save settings button
-  document.getElementById('save-settings-btn')?.addEventListener('click', saveSettings);
-}
-
-async function saveSettings() {
-  const topN = parseInt(document.getElementById('settings-top-n')?.value || 50);
-  const pollInterval = parseInt(document.getElementById('settings-poll-interval')?.value || 60);
-  const recCount = parseInt(document.getElementById('settings-rec-count')?.value || 10);
-  const srMin = parseFloat(document.getElementById('settings-sr-min')?.value || 0);
-  const srMax = parseFloat(document.getElementById('settings-sr-max')?.value || 15);
-
-  const modCheckboxes = document.querySelectorAll('[data-mod-checkbox]:checked');
-  const prefMods = Array.from(modCheckboxes).map(cb => cb.getAttribute('data-mod-checkbox')).join(',');
-
-  const useRecent = document.getElementById('settings-use-recent')?.checked || false;
-
-  try {
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        top_n: topN,
-        poll_interval: pollInterval,
-        rec_count: recCount,
-        sr_min: srMin,
-        sr_max: srMax,
-        preferred_mods: prefMods,
-        use_recent_plays: useRecent,
-      }),
-    });
-    toast('Settings saved', 'success');
-  } catch (err) {
-    console.error('Error saving settings:', err);
-    toast('Failed to save settings', 'error');
-  }
-}
-
-// ============================================================================
-// TAB NAVIGATION
-// ============================================================================
-
-function setupTabs() {
-  // Desktop header tabs
-  document.querySelectorAll('.tab').forEach(btn => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-  });
-  // Mobile bottom nav tabs
-  document.querySelectorAll('.mobile-tab').forEach(btn => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-  });
-  // View toggle (grid/list) for top plays
-  document.querySelectorAll('.view-toggle .view-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      playsViewMode = btn.dataset.view;
-      toggleViewMode();
-    });
-  });
-}
-
-function switchTab(name) {
-  // Desktop header tabs — update active + ARIA
-  document.querySelectorAll('.tab').forEach(t => {
-    const active = t.dataset.tab === name;
-    t.classList.toggle('active', active);
-    t.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-  // Mobile bottom nav tabs
-  document.querySelectorAll('.mobile-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === name);
-  });
-  // Tab panels
-  document.querySelectorAll('.tab-content').forEach(s =>
-    s.classList.toggle('active', s.id === `tab-${name}`)
-  );
-
-  // Lazy-load tabs on first visit
-  if (name === 'liked' && !likedTabLoaded) loadLikedTab();
-  if (name === 'taste' && !tasteTabLoaded) loadTasteTab();
-  if (name === 'settings') loadHistory();
-}
-
-// ============================================================================
-// TOP PLAYS TAB
-// ============================================================================
-
-async function loadTopPlays() {
-  document.getElementById('plays-loading')?.classList.remove('hidden');
-  document.getElementById('plays-error')?.classList.add('hidden');
-  document.getElementById('plays-empty')?.classList.add('hidden');
-  document.getElementById('plays-grid')?.classList.add('hidden');
-  try {
-    const resp = await fetch('/api/top-plays');
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    topPlays = data.plays || [];
-    renderTopPlays();
-  } catch (err) {
-    document.getElementById('plays-loading')?.classList.add('hidden');
-    document.getElementById('plays-error')?.classList.remove('hidden');
-    document.getElementById('plays-error-msg').textContent = err.message;
-  }
-}
-
-document.getElementById('refresh-plays-btn')?.addEventListener('click', loadTopPlays);
-
-function renderTopPlays() {
-  const loading = document.getElementById('plays-loading');
-  const error   = document.getElementById('plays-error');
-  const empty   = document.getElementById('plays-empty');
-  const grid    = document.getElementById('plays-grid');
-  loading?.classList.add('hidden');
-  error?.classList.add('hidden');
-
-  if (!topPlays.length) {
-    empty?.classList.remove('hidden');
-    grid?.classList.add('hidden');
-    return;
-  }
-  empty?.classList.add('hidden');
-  grid?.classList.remove('hidden');
-  grid.classList.toggle('list-view', playsViewMode === 'list');
-  grid.innerHTML = topPlays.map((play, idx) => buildPlayCard(play, idx)).join('');
-  document.getElementById('plays-subtitle').textContent = `Showing ${topPlays.length} best scores`;
-
-  // Attach event listeners
-  grid.querySelectorAll('[data-play-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmsId = parseInt(btn.getAttribute('data-play-btn'));
-      togglePreview(bmsId, btn);
-    });
-  });
-
-  grid.querySelectorAll('[data-view-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmId = btn.getAttribute('data-view-btn');
-      window.open(`https://osu.ppy.sh/b/${bmId}`, '_blank');
-    });
-  });
-
-  grid.querySelectorAll('[data-similar-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const idx = parseInt(btn.getAttribute('data-similar-btn'));
-      loadRecsForPlay(idx);
-    });
-  });
-}
-
-function buildPlayCard(play, index) {
-  const bm = play.beatmap || {};
-  const srClass = starColorClass(bm.difficulty_rating || 0);
-  const rankClass = `rank-${play.rank?.toUpperCase() || 'u'}`;
-  const coverUrl = bm.beatmapset_id
-    ? `https://assets.ppy.sh/beatmaps/${bm.beatmapset_id}/covers/cover.jpg`
-    : '/static/placeholder.jpg';
-
-  const modsHtml = (play.mods || []).map(m => `<span class="mod-chip">${esc(m)}</span>`).join('');
-
-  if (playsViewMode === 'list') {
-    return `
-      <div class="play-card list-view">
-        <div class="card-header">
-          <img src="${esc(coverUrl)}" alt="Cover" class="card-cover">
-          <div class="card-info">
-            <div class="title">${esc(bm.title || 'Unknown')}</div>
-            <div class="artist">${esc(bm.artist || 'Unknown')}</div>
-            <div class="mapper">by ${esc(bm.creator || 'Unknown')}</div>
-          </div>
-        </div>
-        <div class="card-stats">
-          <span class="stat">Acc: <strong>${(play.accuracy * 100).toFixed(2)}%</strong></span>
-          <span class="stat ${rankClass}">Rank: ${play.rank}</span>
-          <span class="stat">PP: <strong>${Math.round(play.pp)}</strong></span>
-          <span class="stat">SR: <span class="star ${srClass}">${(bm.difficulty_rating || 0).toFixed(2)}</span></span>
-          <span class="stat">BPM: ${bm.bpm || 0}</span>
-        </div>
-        ${modsHtml ? `<div class="mods">${modsHtml}</div>` : ''}
-        <div class="card-actions">
-          <button class="play-btn" data-play-btn="${bm.id}" title="Preview">▶ Play</button>
-          <button class="view-btn" data-view-btn="${bm.id}" title="View on osu!">View</button>
-          <button class="similar-btn" data-similar-btn="${index}" title="Find similar">Similar</button>
-        </div>
+      <div class="play-footer">
+        <span class="play-pp">${pp}pp</span>
+        <span class="play-acc">${acc}%</span>
+      </div>
+      <div class="play-actions">
+        <button class="play-action-btn" title="Find similar maps" data-action="recs" aria-label="Find similar maps">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+        </button>
+        <a href="https://osu.ppy.sh/beatmapsets/${bms.id}#osu/${bm.id}" target="_blank" rel="noopener" class="play-action-btn" title="View on osu!" aria-label="View on osu!">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+        </a>
       </div>
     `;
-  }
 
-  return `
-    <div class="play-card">
-      <img src="${esc(coverUrl)}" alt="Cover" class="card-cover">
-      <div class="card-overlay">
-        <button class="play-btn" data-play-btn="${bm.id}">▶</button>
-      </div>
-      <div class="card-content">
-        <div class="title">${esc(bm.title || 'Unknown')}</div>
-        <div class="artist">${esc(bm.artist || 'Unknown')}</div>
-        <div class="mapper">${esc(bm.creator || 'Unknown')}</div>
-        <div class="stats">
-          <span class="stat">Acc: <strong>${(play.accuracy * 100).toFixed(2)}%</strong></span>
-          <span class="stat ${rankClass}">Rank: ${play.rank}</span>
-          <span class="stat">PP: <strong>${Math.round(play.pp)}</strong></span>
-        </div>
-        <div class="difficulty">
-          <span class="sr ${srClass}">${(bm.difficulty_rating || 0).toFixed(2)}★</span>
-          <span class="bpm">${bm.bpm || 0} BPM</span>
-        </div>
-        ${modsHtml ? `<div class="mods">${modsHtml}</div>` : ''}
-        <div class="actions">
-          <button class="view-btn" data-view-btn="${bm.id}" title="View">View</button>
-          <button class="similar-btn" data-similar-btn="${index}" title="Find similar">Similar</button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function toggleViewMode() {
-  const grid = document.getElementById('plays-grid');
-  if (grid) {
-    grid.classList.toggle('list-view', playsViewMode === 'list');
-  }
-  // Update button active states
-  document.querySelectorAll('.view-toggle .view-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.view === playsViewMode);
-  });
-  renderTopPlays();
-}
-
-// ============================================================================
-// RECOMMENDATIONS TAB
-// ============================================================================
-
-async function loadCurrentRecommendations() {
-  recMode = 'profile';
-  const modLabel = activeModFilter ? ` · ${activeModFilter} plays only` : '';
-  const titleEl = document.getElementById('recs-title');
-  const subEl = document.getElementById('recs-subtitle');
-  if (titleEl) titleEl.textContent = 'Recommendations';
-  if (subEl) subEl.textContent = `Based on your overall taste profile${modLabel}`;
-  document.getElementById('recs-profile-btn')?.classList.add('active-mode');
-
-  document.getElementById('recs-loading')?.classList.remove('hidden');
-  document.getElementById('recs-error')?.classList.add('hidden');
-  document.getElementById('recs-grid')?.classList.add('hidden');
-  document.getElementById('recs-empty-cat')?.classList.add('hidden');
-
-  try {
-    let url = '/api/recommendations';
-    if (recsSelectedMods.length > 0) {
-      url += '?mod_filter=' + encodeURIComponent(recsSelectedMods.join(','));
-    } else if (activeModFilter) {
-      url += '?mod_filter=' + encodeURIComponent(activeModFilter);
-    }
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('Failed to load');
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    currentRecs = data.recommendations || [];
-    renderRecommendations();
-  } catch (err) {
-    document.getElementById('recs-loading')?.classList.add('hidden');
-    document.getElementById('recs-error')?.classList.remove('hidden');
-    document.getElementById('recs-error-msg').textContent = err.message;
-  }
-}
-
-// Alias for HTML onclick references
-const loadRecommendations = loadCurrentRecommendations;
-
-function renderRecommendations() {
-  document.getElementById('recs-loading')?.classList.add('hidden');
-  document.getElementById('recs-error')?.classList.add('hidden');
-  const emptyCat = document.getElementById('recs-empty-cat');
-  const grid = document.getElementById('recs-grid');
-
-  let filtered = activeCat === 'all'
-    ? currentRecs
-    : currentRecs.filter(r => {
-        // Match by category or mapper tags
-        const cat = r.category || 'best_match';
-        const types = (r.beatmap?.map_types || []).map(t => t.toLowerCase());
-        return cat === activeCat || types.includes(activeCat);
-      });
-
-  if (activeStatus !== 'all') {
-    filtered = filtered.filter(r => {
-      const s = (r.beatmapset?.status || '').toLowerCase();
-      if (activeStatus === 'ranked') return s === 'ranked' || s === 'approved';
-      if (activeStatus === 'loved') return s === 'loved';
-      return true;
+    // Preview audio button
+    card.querySelector(".play-preview-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      playPreview(bms.id, bms.title, bms.artist, cover);
     });
+
+    // Find similar recs button
+    card.querySelector('[data-action="recs"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      loadRecommendationsForPlay(idx);
+    });
+
+    return card;
   }
 
-  // Apply global SR filter
-  if (globalSrMin !== null) {
-    filtered = filtered.filter(r => (r.beatmap?.difficulty_rating || 0) >= globalSrMin);
-  }
-  if (globalSrMax !== null) {
-    filtered = filtered.filter(r => (r.beatmap?.difficulty_rating || 0) <= globalSrMax);
-  }
-
-  if (!currentRecs.length) {
-    grid?.classList.remove('hidden');
-    emptyCat?.classList.add('hidden');
-    grid.innerHTML = `<div class="loading-state"><div class="error-icon">🔍</div><p>No recommendations found — try refreshing.</p></div>`;
-    return;
-  }
-  if (!filtered.length) {
-    grid?.classList.add('hidden');
-    if (emptyCat) { emptyCat.classList.remove('hidden'); emptyCat.textContent = 'No recommendations in this category yet.'; }
-    return;
-  }
-  emptyCat?.classList.add('hidden');
-  grid?.classList.remove('hidden');
-  grid.innerHTML = filtered.map(buildRecCard).join('');
-}
-
-function buildRecCard(rec) {
-  const bms   = rec.beatmapset || {};
-  const bm    = rec.beatmap    || {};
-  const bmsId = bms.id || 0;
-  const bmId  = bm.id  || 0;
-  const covers = bms.covers || {};
-  const cover  = covers['cover@2x'] || covers['cover'] ||
-                 `https://assets.ppy.sh/beatmaps/${bmsId}/covers/cover.jpg`;
-  const sr    = bm.difficulty_rating ? bm.difficulty_rating.toFixed(2) : '?';
-  const ar    = bm.ar    ? parseFloat(bm.ar).toFixed(1) : '';
-  const od    = bm.accuracy ? parseFloat(bm.accuracy).toFixed(1) : '';
-  const bpm   = bm.bpm || bms.bpm;
-  const bpmStr = bpm ? `${Math.round(bpm)}` : '';
-  const length = bm.total_length ? fmtLen(bm.total_length) : '';
-  const starClass = starColorClass(parseFloat(sr));
-  const dlUrl  = `https://api.nerinyan.moe/d/${bmsId}`;
-  const viewUrl = bm.url || `https://osu.ppy.sh/b/${bmId}`;
-
-  // Modified stats when mods active
-  let arDisplay = ar ? `AR${ar}` : '';
-  let bpmDisplay = bpmStr ? `${bpmStr}BPM` : '';
-  if (recsSelectedMods.length > 0) {
-    const modified = calcModifiedStats(bm, recsSelectedMods);
-    if (ar) arDisplay = `AR<s>${ar}</s>→${modified.ar}`;
-    if (bpmStr) bpmDisplay = `<s>${bpmStr}</s>→${modified.bpm}BPM`;
+  function loadRecommendationsForPlay(index) {
+    recMode = "play";
+    recPlayIndex = index;
+    switchTab("recs");
+    const play = playsData[index];
+    const bms = play?.beatmapset || {};
+    $("recs-title").textContent = `Recs for: ${bms.title || "Play #" + (index + 1)}`;
+    $("recs-subtitle").textContent = `Maps similar to this play`;
+    $("recs-profile-btn")?.classList.remove("hidden");
+    _loadRecommendations(`/api/recommendations/for-play/${index}`);
   }
 
-  // Suggested mod badges
-  const suggestedMods = Array.isArray(rec.suggested_mods) ? rec.suggested_mods : [];
-  const modBadges = suggestedMods.length
-    ? `<div class="rec-mods">${suggestedMods.map(m =>
-        `<span class="rec-mod-badge mod-${m}">${m}</span>`).join('')}</div>`
-    : '';
+  window.switchRecMode = function (mode) {
+    recMode = "profile";
+    recPlayIndex = null;
+    $("recs-title").textContent = "Recommendations";
+    $("recs-subtitle").textContent = "Based on your overall taste profile";
+    $("recs-profile-btn")?.classList.add("hidden");
+    _loadRecommendations();
+  };
 
-  // Category label
-  const catLabels = { best_match:'Best Match', pp_farm:'PP Farm', comfort:'Comfort',
-                      challenge:'Challenge', just_ranked:'Just Ranked', skill_gap:'Skill Gap' };
-  const catLabel = catLabels[rec.category] || '';
-  const catBadge = catLabel
-    ? `<span class="cat-badge cat-${rec.category}">${catLabel}</span>` : '';
+  /* ─── Recommendations ───────────────────────────────────────── */
 
-  return `<div class="rec-card" data-bmsid="${bmsId}">
-  <div class="rec-cover">
-    <img src="${cover}" alt="" loading="lazy" onerror="this.style.opacity=0">
-    <div class="rec-cover-overlay"></div>
-    <button class="btn-preview rec-preview-btn" onclick="togglePreview(${bmsId}, this)" title="Preview audio">▶</button>
-    <div class="rec-stars ${starClass}">★ ${sr}</div>
-  </div>
-  <div class="rec-body">
-    <div class="rec-title-row">
-      <div class="rec-title">${esc(bms.title || '?')} <span class="rec-version">— ${esc(bm.version || '?')}</span></div>
-      ${catBadge}
-    </div>
-    <div class="rec-mapper">${esc(bms.artist || '')} · mapped by ${esc(bms.creator || '?')}</div>
-    <div class="rec-attrs">
-      ${arDisplay ? `<span class="attr-chip ar">${arDisplay}</span>` : ''}
-      ${od ? `<span class="attr-chip">OD${od}</span>` : ''}
-      ${bpmDisplay ? `<span class="attr-chip bpm">${bpmDisplay}</span>` : ''}
-      ${length ? `<span class="attr-chip">${length}</span>` : ''}
-    </div>
-    ${modBadges}
-    ${renderTypeBadges(bm.map_types)}
-    ${rec.reason ? `<div class="rec-reason">💡 ${esc(rec.reason)}</div>` : ''}
-  </div>
-  <div class="rec-actions">
-    <button class="btn-preview" onclick="togglePreview(${bmsId}, this)" title="Preview audio">▶</button>
-    <a href="${viewUrl}" target="_blank" class="btn-outline">View</a>
-    <a href="${dlUrl}" target="_blank" class="btn-outline btn-dl">Download</a>
-    <a href="osu://b/${bmId}" class="btn-outline" title="Open in osu!">▶ Play</a>
-    <button class="btn-like${likedBmsIds.has(bmsId) ? ' btn-liked' : ''}" onclick="likeRecById(${bmsId}, this)" title="Mark as interested">${likedBmsIds.has(bmsId) ? '♥' : '♡'}</button>
-    <button class="btn-dismiss" onclick="dismissRecById(${bmsId}, this)" title="Not interested">✕</button>
-  </div>
-</div>`;
-}
+  function _loadRecommendations(url) {
+    const loading = $("recs-loading");
+    const error = $("recs-error");
+    const emptyCat = $("recs-empty-cat");
+    const grid = $("recs-grid");
+    if (loading) loading.classList.remove("hidden");
+    if (error) error.classList.add("hidden");
+    if (emptyCat) emptyCat.classList.add("hidden");
+    if (grid) { grid.classList.add("hidden"); grid.innerHTML = ""; }
 
-function dismissRecById(bmsId, el) {
-  const card = el?.closest('.rec-card');
-  dismissRec(bmsId, card);
-}
+    let endpoint = url || "/api/recommendations";
+    if (!url && activeRecMods.length > 0) {
+      endpoint += `?mod_filter=${activeRecMods.join(",")}`;
+    }
 
-function likeRecById(bmsId, el) {
-  const rec = currentRecs.find(r => (r.beatmapset || {}).id === bmsId);
-  if (!rec) return;
-  const card = el?.closest('.rec-card');
-  const btn  = card?.querySelector('.btn-like');
-  likeRec(bmsId, rec.beatmap || {}, rec.beatmapset || {}, btn);
-}
-
-// Wire rec mod bar clicks
-document.addEventListener('click', e => {
-  const btn = e.target.closest('.rec-mod-toggle');
-  if (!btn) return;
-  const mod = btn.dataset.mod;
-  if (recsSelectedMods.includes(mod)) {
-    recsSelectedMods = recsSelectedMods.filter(m => m !== mod);
-  } else {
-    const incompatible = MOD_INCOMPATIBLE[mod] || [];
-    recsSelectedMods = recsSelectedMods.filter(m => !incompatible.includes(m));
-    recsSelectedMods.push(mod);
+    fetch(endpoint)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (loading) loading.classList.add("hidden");
+        if (data.error) throw new Error(data.error);
+        recsData = data.recommendations || [];
+        renderRecs();
+        if (grid) grid.classList.remove("hidden");
+      })
+      .catch((err) => {
+        if (loading) loading.classList.add("hidden");
+        const msg = $("recs-error-msg");
+        if (msg) msg.textContent = err.message || "Could not load recommendations";
+        if (error) error.classList.remove("hidden");
+      });
   }
-  // Update button states
-  document.querySelectorAll('.rec-mod-toggle').forEach(b => {
-    b.classList.toggle('active', recsSelectedMods.includes(b.dataset.mod));
-    b.setAttribute('aria-pressed', recsSelectedMods.includes(b.dataset.mod));
-  });
-  loadCurrentRecommendations();
-});
 
-// Wire category tabs
-document.addEventListener('click', e => {
-  const tab = e.target.closest('.cat-tab');
-  if (tab) {
-    activeCat = tab.dataset.cat;
-    document.querySelectorAll('.cat-tab').forEach(t =>
-      t.classList.toggle('active', t.dataset.cat === activeCat));
-    renderRecommendations();
+  function loadRecommendations() {
+    recMode = "profile";
+    _loadRecommendations();
   }
-  const sbtn = e.target.closest('.status-btn');
-  if (sbtn) {
-    activeStatus = sbtn.dataset.status;
-    document.querySelectorAll('.status-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.status === activeStatus));
-    renderRecommendations();
+  window.loadRecommendations = loadRecommendations;
+
+  function renderRecs() {
+    const grid = $("recs-grid");
+    const emptyCat = $("recs-empty-cat");
+    if (!grid) return;
+    grid.innerHTML = "";
+    let filtered = recsData;
+    if (activeCat !== "all") {
+      filtered = recsData.filter((r) => (r.category || "best_match") === activeCat);
+    }
+    if (activeStatusFilter !== "all") {
+      filtered = filtered.filter((r) => {
+        const status = (r.beatmapset?.status || "").toLowerCase();
+        if (activeStatusFilter === "ranked") return status === "ranked" || status === "approved";
+        if (activeStatusFilter === "loved") return status === "loved";
+        return true;
+      });
+    }
+    if (filtered.length === 0) {
+      if (emptyCat) emptyCat.classList.remove("hidden");
+      grid.classList.add("hidden");
+      return;
+    }
+    if (emptyCat) emptyCat.classList.add("hidden");
+    grid.classList.remove("hidden");
+    filtered.forEach((rec) => grid.appendChild(buildRecCard(rec)));
   }
-});
 
-// Refresh recs button
-document.getElementById('refresh-recs-btn')?.addEventListener('click', () => {
-  if (recMode === 'profile') loadCurrentRecommendations();
-  else if (recMode.startsWith('play:')) loadRecsForPlay(parseInt(recMode.split(':')[1]));
-});
+  function buildRecCard(rec) {
+    const bm = rec.beatmap || {};
+    const bms = rec.beatmapset || {};
+    const sr = bm.difficulty_rating || 0;
+    const cover = coverUrl(bms);
+    const types = bm.map_types || [];
+    const reason = rec.reason || "";
+    const isLiked = likedIds.has(bms.id);
 
-function switchRecMode(mode) {
-  if (mode === 'profile') loadCurrentRecommendations();
-}
+    const card = document.createElement("div");
+    card.className = "rec-card";
+    card.dataset.bmsId = bms.id;
+    card.innerHTML = `
+      <div class="rec-cover" style="background-image:url('${escHtml(cover)}')">
+        <div class="rec-cover-overlay"></div>
+        <span class="rec-stars ${starColorClass(sr)}">★ ${sr.toFixed(2)}</span>
+        <button class="rec-preview-btn" title="Preview audio" aria-label="Preview audio">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+      </div>
+      <div class="rec-body">
+        <div class="rec-title" title="${escHtml(bms.title)} [${escHtml(bm.version)}]">${escHtml(bms.title)}</div>
+        <div class="rec-mapper">${escHtml(bms.artist)} // ${escHtml(bms.creator)}</div>
+        <div class="rec-attrs">
+          <span class="attr-chip">AR ${bm.ar || 0}</span>
+          <span class="attr-chip">BPM ${bm.bpm || 0}</span>
+          <span class="attr-chip">${formatLength(bm.total_length)}</span>
+        </div>
+        ${types.length ? `<div class="rec-types">${renderTypeBadges(types)}</div>` : ""}
+        ${reason ? `<div class="rec-reason" title="${escHtml(reason)}">${escHtml(reason)}</div>` : ""}
+      </div>
+      <div class="rec-actions">
+        <button class="rec-action-btn rec-like-btn ${isLiked ? "liked" : ""}" title="${isLiked ? "Unlike" : "Interested"}" data-action="like" aria-label="${isLiked ? "Unlike" : "Interested"}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        </button>
+        <button class="rec-action-btn" title="Dismiss" data-action="dismiss" aria-label="Dismiss">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <a href="https://osu.ppy.sh/beatmapsets/${bms.id}#osu/${bm.id}" target="_blank" rel="noopener" class="rec-action-btn" title="View on osu!" aria-label="View on osu!">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+        </a>
+        <a href="osu://dl/${bms.id}" class="rec-action-btn" title="Download (osu!direct)" aria-label="Download">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        </a>
+      </div>
+    `;
 
-async function likeRec(bmsId, bm, bms, btnEl) {
-  const alreadyLiked = likedBmsIds.has(bmsId);
-  try {
-    if (alreadyLiked) {
-      await fetch(`/api/feedback/like/${bmsId}`, { method: 'DELETE' });
-      likedBmsIds.delete(bmsId);
-      if (btnEl) { btnEl.textContent = '♡'; btnEl.classList.remove('btn-liked'); }
-      toast('Removed from liked maps', 'info');
+    // Preview audio
+    card.querySelector(".rec-preview-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      playPreview(bms.id, bms.title, bms.artist, cover);
+    });
+
+    // Like
+    card.querySelector('[data-action="like"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleLike(bms.id, bm, bms, card);
+    });
+
+    // Dismiss
+    card.querySelector('[data-action="dismiss"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dismissRec(bms.id, bm, bms, card);
+    });
+
+    return card;
+  }
+
+  function toggleLike(bmsId, bm, bms, card) {
+    if (likedIds.has(bmsId)) {
+      // Unlike
+      fetch(`/api/feedback/like/${bmsId}`, { method: "DELETE" })
+        .then((r) => r.json())
+        .then(() => {
+          likedIds.delete(bmsId);
+          const btn = card.querySelector('[data-action="like"]');
+          if (btn) { btn.classList.remove("liked"); btn.title = "Interested"; }
+          toast("Removed from liked", "info");
+        })
+        .catch(() => toast("Failed to unlike", "error"));
     } else {
-      await fetch('/api/feedback/like', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ beatmapset_id: bmsId, beatmap_id: bm?.id, bm: bm || {}, bms: bms || {} }),
+      fetch("/api/feedback/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beatmapset_id: bmsId,
+          beatmap_id: bm.id,
+          bm: bm,
+          bms: bms,
+        }),
+      })
+        .then((r) => r.json())
+        .then(() => {
+          likedIds.add(bmsId);
+          const btn = card.querySelector('[data-action="like"]');
+          if (btn) { btn.classList.add("liked"); btn.title = "Unlike"; }
+          toast("Added to liked!", "success");
+        })
+        .catch(() => toast("Failed to like", "error"));
+    }
+  }
+
+  // Global alias for inline onclick
+  window.likeRecById = function (bmsId) {
+    const rec = recsData.find((r) => r.beatmapset?.id === bmsId);
+    if (!rec) return;
+    const card = $q(`.rec-card[data-bms-id="${bmsId}"]`);
+    if (card) toggleLike(bmsId, rec.beatmap, rec.beatmapset, card);
+  };
+
+  function dismissRec(bmsId, bm, bms, card) {
+    card.classList.add("dismissing");
+    fetch("/api/dismissed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beatmapset_id: bmsId, bm: bm, bms: bms }),
+    })
+      .then((r) => r.json())
+      .then(() => {
+        dismissedIds.add(bmsId);
+        setTimeout(() => {
+          recsData = recsData.filter((r) => r.beatmapset?.id !== bmsId);
+          renderRecs();
+        }, 350);
+        toast("Dismissed", "info");
+      })
+      .catch(() => {
+        card.classList.remove("dismissing");
+        toast("Failed to dismiss", "error");
       });
-      likedBmsIds.add(bmsId);
-      if (btnEl) { btnEl.textContent = '♥'; btnEl.classList.add('btn-liked'); }
-      toast('Added to liked maps — recs will adapt', 'ok');
+  }
+
+  window.dismissRecById = function (bmsId) {
+    const rec = recsData.find((r) => r.beatmapset?.id === bmsId);
+    if (!rec) return;
+    const card = $q(`.rec-card[data-bms-id="${bmsId}"]`);
+    if (card) dismissRec(bmsId, rec.beatmap, rec.beatmapset, card);
+  };
+
+  /* ─── Rec Mod Toggles ──────────────────────────────────────── */
+
+  function setupRecModToggles() {
+    $qa(".rec-mod-toggle[data-mod]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mod = btn.dataset.mod;
+        // Handle incompatibility
+        if (modIncompat(activeRecMods, mod)) {
+          const incompat = { HR: "EZ", EZ: "HR", DT: "HT", HT: "DT" }[mod];
+          activeRecMods = activeRecMods.filter((m) => m !== incompat);
+          $qa(".rec-mod-toggle[data-mod]").forEach((b) => {
+            if (b.dataset.mod === incompat) {
+              b.classList.remove("active");
+              b.setAttribute("aria-pressed", "false");
+            }
+          });
+        }
+        const isActive = activeRecMods.includes(mod);
+        if (isActive) {
+          activeRecMods = activeRecMods.filter((m) => m !== mod);
+          btn.classList.remove("active");
+          btn.setAttribute("aria-pressed", "false");
+        } else {
+          activeRecMods.push(mod);
+          btn.classList.add("active");
+          btn.setAttribute("aria-pressed", "true");
+        }
+        _loadRecommendations();
+      });
+    });
+  }
+
+  /* ─── Category Tabs ─────────────────────────────────────────── */
+
+  function setupCatTabs() {
+    $qa(".cat-tab[data-cat]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeCat = btn.dataset.cat;
+        $qa(".cat-tab[data-cat]").forEach((b) => b.classList.toggle("active", b.dataset.cat === activeCat));
+        renderRecs();
+      });
+    });
+  }
+
+  /* ─── Status Filter ─────────────────────────────────────────── */
+
+  function setupStatusFilter() {
+    $qa(".status-btn[data-status]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeStatusFilter = btn.dataset.status;
+        $qa(".status-btn[data-status]").forEach((b) => b.classList.toggle("active", b.dataset.status === activeStatusFilter));
+        renderRecs();
+      });
+    });
+  }
+
+  /* ─── Explore Tab ───────────────────────────────────────────── */
+
+  function setupExplore() {
+    // Skill category buttons
+    $qa(".skill-cat-btn[data-skill]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeExploreSkill = btn.dataset.skill;
+        $qa(".skill-cat-btn[data-skill]").forEach((b) => b.classList.toggle("active", b.dataset.skill === activeExploreSkill));
+      });
+    });
+
+    // Mod buttons
+    $qa(".explore-mod-btn[data-mod]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeExploreMod = btn.dataset.mod;
+        $qa(".explore-mod-btn[data-mod]").forEach((b) => b.classList.toggle("active", b.dataset.mod === activeExploreMod));
+      });
+    });
+
+    // Dual range sliders
+    setupDualSlider("sr-slider", "explore-sr-min", "explore-sr-max", 0, 150, 10);
+    setupDualSlider("bpm-slider", "explore-bpm-min", "explore-bpm-max", 60, 400, 1);
+    setupDualSlider("global-sr-slider", "global-sr-min", "global-sr-max", 0, 200, 10);
+  }
+
+  function setupDualSlider(sliderId, minInputId, maxInputId, rangeMin, rangeMax, divisor) {
+    const slider = $(sliderId);
+    if (!slider) return;
+    const thumbMin = slider.querySelector(".thumb-min");
+    const thumbMax = slider.querySelector(".thumb-max");
+    const range = slider.querySelector(".slider-range");
+    const minInput = $(minInputId);
+    const maxInput = $(maxInputId);
+    if (!thumbMin || !thumbMax || !range) return;
+
+    function updateRange() {
+      const min = parseInt(thumbMin.value);
+      const max = parseInt(thumbMax.value);
+      const sliderMin = parseInt(thumbMin.min);
+      const sliderMax = parseInt(thumbMin.max);
+      const total = sliderMax - sliderMin;
+      const left = ((Math.min(min, max) - sliderMin) / total) * 100;
+      const right = ((sliderMax - Math.max(min, max)) / total) * 100;
+      range.style.left = left + "%";
+      range.style.right = right + "%";
+      // Sync number inputs
+      if (minInput) minInput.value = (Math.min(min, max) / divisor).toFixed(divisor >= 10 ? 1 : 0);
+      if (maxInput) maxInput.value = (Math.max(min, max) / divisor).toFixed(divisor >= 10 ? 1 : 0);
     }
-  } catch (e) {
-    toast('Could not update liked maps', 'err');
-  }
-}
 
-async function dismissRec(bmsId, cardEl) {
-  const rec = currentRecs.find(r => (r.beatmapset || {}).id === bmsId) || {};
-  try {
-    await fetch('/api/dismissed', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        beatmapset_id: bmsId,
-        bm: rec.beatmap || {},
-        bms: rec.beatmapset || {},
-      }),
-    });
-    currentRecs = currentRecs.filter(r => (r.beatmapset || {}).id !== bmsId);
-    if (cardEl) {
-      cardEl.classList.add('dismissing');
-      setTimeout(() => cardEl.remove(), 300);
+    thumbMin.addEventListener("input", updateRange);
+    thumbMax.addEventListener("input", updateRange);
+
+    // Sync number inputs back to sliders
+    if (minInput) {
+      minInput.addEventListener("change", () => {
+        thumbMin.value = Math.round(parseFloat(minInput.value) * divisor);
+        updateRange();
+      });
     }
-    toast('Map dismissed', 'info');
-  } catch (e) {
-    toast('Could not dismiss map', 'err');
+    if (maxInput) {
+      maxInput.addEventListener("change", () => {
+        thumbMax.value = Math.round(parseFloat(maxInput.value) * divisor);
+        updateRange();
+      });
+    }
+
+    updateRange();
   }
-}
 
-async function loadRecsForPlay(index) {
-  recMode = `play:${index}`;
-  const play  = topPlays[index];
-  if (!play) return;
-  const bms   = play.beatmapset || {};
-  const title = bms.title || play.beatmap?.title || 'this map';
-  document.getElementById('recs-title').textContent    = `Similar to: ${title}`;
-  document.getElementById('recs-subtitle').textContent = `Maps like [${play.beatmap?.version || '?'}]`;
-  document.getElementById('recs-profile-btn')?.classList.remove('active-mode');
-  switchTab('recs');
-  document.getElementById('recs-loading')?.classList.remove('hidden');
-  document.getElementById('recs-grid')?.classList.add('hidden');
-  try {
-    const r    = await fetch(`/api/recommendations/for-play/${index}`);
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-    currentRecs = data.recommendations || [];
-    renderRecommendations();
-  } catch (e) {
-    document.getElementById('recs-loading')?.classList.add('hidden');
-    document.getElementById('recs-error')?.classList.remove('hidden');
-    document.getElementById('recs-error-msg').textContent = e.message;
-  }
-}
-
-async function blockMapper(creator, el) {
-  const creatorLower = (creator || '').toLowerCase().trim();
-  if (!creatorLower) return;
-  try {
-    await fetch('/api/blocked-mappers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ creator: creatorLower }),
-    });
-    blockedMappers.add(creatorLower);
-    currentRecs = currentRecs.filter(r => (r.beatmapset?.creator || '').toLowerCase() !== creatorLower);
-    renderRecommendations();
-    toast(`Blocked maps by ${creator}`, 'info');
-  } catch (e) {
-    toast('Could not block mapper', 'err');
-  }
-}
-
-// ============================================================================
-// EXPLORE TAB
-// ============================================================================
-
-function initExploreTab() {
-  // Skill category buttons
-  document.querySelectorAll('[data-skill-cat]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('[data-skill-cat]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      loadExploreRecs();
-    });
-  });
-
-  // Mod buttons
-  document.querySelectorAll('[data-explore-mod]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      btn.classList.toggle('active');
-    });
-  });
-
-  // Dual sliders
-  initDualSlider('#sr-slider', 'explore-sr-min', 'explore-sr-max', 0, 15, 0.1);
-  initDualSlider('#bpm-slider', 'explore-bpm-min', 'explore-bpm-max', 60, 400, 5);
-
-  // Load button
-  document.getElementById('load-explore-btn')?.addEventListener('click', loadExploreRecs);
-}
-
-async function loadExploreRecs() {
-  try {
-    const srMin = parseFloat(document.getElementById('explore-sr-min')?.value || 0);
-    const srMax = parseFloat(document.getElementById('explore-sr-max')?.value || 15);
-    const bpmMin = parseInt(document.getElementById('explore-bpm-min')?.value || 60);
-    const bpmMax = parseInt(document.getElementById('explore-bpm-max')?.value || 400);
-
+  window.loadExploreRecs = function () {
+    const srMin = parseFloat($("explore-sr-min")?.value || 3);
+    const srMax = parseFloat($("explore-sr-max")?.value || 7);
+    const bpmMin = parseFloat($("explore-bpm-min")?.value || 120);
+    const bpmMax = parseFloat($("explore-bpm-max")?.value || 240);
+    const ar = parseFloat($("explore-ar")?.value || 9);
     const sr = (srMin + srMax) / 2;
     const bpm = (bpmMin + bpmMax) / 2;
-    const ar = 8; // Default AR for explore
 
-    const resp = await fetch(`/api/recommendations/explore?sr=${sr}&ar=${ar}&bpm=${bpm}`);
-    if (!resp.ok) throw new Error('Failed to load');
-    const data = await resp.json();
-    currentRecs = data.recommendations || [];
+    const loading = $("explore-loading");
+    const error = $("explore-error");
+    const grid = $("explore-grid");
+    if (loading) loading.classList.remove("hidden");
+    if (error) error.classList.add("hidden");
+    if (grid) { grid.classList.add("hidden"); grid.innerHTML = ""; }
 
-    const container = document.querySelector('[data-explore-recs]');
-    if (container) {
-      container.innerHTML = currentRecs.map(rec => buildRecCard(rec)).join('');
-      attachRecCardListeners(container);
-    }
-  } catch (err) {
-    console.error('Error loading explore recs:', err);
-    toast('Failed to load explore recommendations', 'error');
-  }
-}
-
-function initDualSlider(containerSelector, minInputId, maxInputId, absMin, absMax, step) {
-  const container = document.querySelector(containerSelector);
-  if (!container) return;
-
-  const minInput = document.getElementById(minInputId);
-  const maxInput = document.getElementById(maxInputId);
-  const minThumb = container.querySelector('.thumb-min');
-  const maxThumb = container.querySelector('.thumb-max');
-  const range = container.querySelector('.slider-range');
-
-  if (!minInput || !maxInput || !minThumb || !maxThumb || !range) return;
-
-  minInput.value = absMin;
-  maxInput.value = absMax;
-  minInput.min = absMin;
-  minInput.max = absMax;
-  minInput.step = step;
-  maxInput.min = absMin;
-  maxInput.max = absMax;
-  maxInput.step = step;
-
-  function updateSlider() {
-    const min = parseFloat(minInput.value);
-    const max = parseFloat(maxInput.value);
-
-    const minPercent = ((min - absMin) / (absMax - absMin)) * 100;
-    const maxPercent = ((max - absMin) / (absMax - absMin)) * 100;
-
-    minThumb.style.left = minPercent + '%';
-    maxThumb.style.left = maxPercent + '%';
-    range.style.left = minPercent + '%';
-    range.style.right = (100 - maxPercent) + '%';
-  }
-
-  minInput.addEventListener('input', () => {
-    const min = parseFloat(minInput.value);
-    const max = parseFloat(maxInput.value);
-    if (min > max) minInput.value = max;
-    updateSlider();
-  });
-
-  maxInput.addEventListener('input', () => {
-    const min = parseFloat(minInput.value);
-    const max = parseFloat(maxInput.value);
-    if (max < min) maxInput.value = min;
-    updateSlider();
-  });
-
-  let isDragging = false;
-  let dragTarget = null;
-
-  minThumb.addEventListener('mousedown', () => {
-    isDragging = true;
-    dragTarget = 'min';
-  });
-
-  maxThumb.addEventListener('mousedown', () => {
-    isDragging = true;
-    dragTarget = 'max';
-  });
-
-  document.addEventListener('mousemove', (e) => {
-    if (!isDragging || !dragTarget) return;
-
-    const rect = container.getBoundingClientRect();
-    const percent = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-    const value = absMin + (percent / 100) * (absMax - absMin);
-    const rounded = Math.round(value / step) * step;
-
-    if (dragTarget === 'min') {
-      const max = parseFloat(maxInput.value);
-      if (rounded <= max) {
-        minInput.value = rounded.toFixed(step < 1 ? 1 : 0);
-      }
-    } else {
-      const min = parseFloat(minInput.value);
-      if (rounded >= min) {
-        maxInput.value = rounded.toFixed(step < 1 ? 1 : 0);
-      }
-    }
-    updateSlider();
-  });
-
-  document.addEventListener('mouseup', () => {
-    isDragging = false;
-    dragTarget = null;
-  });
-
-  updateSlider();
-}
-
-// ============================================================================
-// LIKED TAB
-// ============================================================================
-
-async function loadLikedTab() {
-  try {
-    const resp = await fetch('/api/feedback');
-    if (!resp.ok) throw new Error('Failed to load');
-    const data = await resp.json();
-
-    likedBmsIds = new Set((data.liked || []).map(Number));
-
-    const container = document.querySelector('[data-liked-grid]');
-    if (!container) return;
-
-    const entries = data.entries || [];
-    container.innerHTML = entries.map(entry => buildLikedCard(entry)).join('');
-    attachLikedCardListeners(container);
-  } catch (err) {
-    console.error('Error loading liked tab:', err);
-    toast('Failed to load liked maps', 'error');
-  }
-}
-
-function buildLikedCard(entry) {
-  const bm = entry.beatmap || {};
-  const srClass = starColorClass(bm.difficulty_rating || 0);
-  const coverUrl = bm.beatmapset_id
-    ? `https://assets.ppy.sh/beatmaps/${bm.beatmapset_id}/covers/cover.jpg`
-    : '/static/placeholder.jpg';
-
-  return `
-    <div class="liked-card">
-      <img src="${esc(coverUrl)}" alt="Cover" class="card-cover">
-      <div class="card-content">
-        <div class="title">${esc(bm.title || 'Unknown')}</div>
-        <div class="artist">${esc(bm.artist || 'Unknown')}</div>
-        <div class="mapper">${esc(bm.creator || 'Unknown')}</div>
-        <div class="stats">
-          <span class="stat">SR: <span class="sr ${srClass}">${(bm.difficulty_rating || 0).toFixed(2)}</span></span>
-          <span class="stat">AR: ${(bm.ar || 0).toFixed(1)}</span>
-          <span class="stat">BPM: ${bm.bpm || 0}</span>
-        </div>
-        <div class="actions">
-          <button class="play-btn" data-play-btn="${bm.id}">▶ Play</button>
-          <button class="view-btn" data-view-btn="${bm.id}">View</button>
-          <button class="download-btn" data-download-btn="${bm.id}">↓ Download</button>
-          <button class="unlike-btn" data-unlike-btn="${bm.id}">Remove</button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function attachLikedCardListeners(container) {
-  container.querySelectorAll('[data-play-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmsId = btn.getAttribute('data-play-btn');
-      const protocol = `osu://b/${bmsId}`;
-      window.location.href = protocol;
-    });
-  });
-
-  container.querySelectorAll('[data-view-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmsId = btn.getAttribute('data-view-btn');
-      window.open(`https://osu.ppy.sh/b/${bmsId}`, '_blank');
-    });
-  });
-
-  container.querySelectorAll('[data-download-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmsId = btn.getAttribute('data-download-btn');
-      window.open(`https://nerinyan.moe/d/${bmsId}`, '_blank');
-    });
-  });
-
-  container.querySelectorAll('[data-unlike-btn]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const bmsId = btn.getAttribute('data-unlike-btn');
-      unlikeFromTab(bmsId, btn);
-    });
-  });
-}
-
-async function unlikeFromTab(bmsId, btn) {
-  try {
-    await fetch(`/api/feedback/like/${bmsId}`, { method: 'DELETE' });
-    likedBmsIds.delete(bmsId);
-    btn.closest('.liked-card').style.opacity = '0.5';
-    toast('Removed from liked', 'success');
-  } catch (err) {
-    console.error('Error unliking:', err);
-    toast('Failed to remove', 'error');
-  }
-}
-
-// ============================================================================
-// TASTE PROFILE TAB
-// ============================================================================
-
-async function loadTasteTab() {
-  try {
-    const [statsResp, snapshotsResp, feedbackResp] = await Promise.all([
-      fetch('/api/profile-stats'),
-      fetch('/api/taste-snapshots'),
-      fetch('/api/feedback')
-    ]);
-
-    if (!statsResp.ok || !snapshotsResp.ok || !feedbackResp.ok) {
-      throw new Error('Failed to load');
-    }
-
-    const stats = await statsResp.json();
-    const snapshots = await snapshotsResp.json();
-    const feedback = await feedbackResp.json();
-
-    renderTasteProfile(stats);
-    renderTasteDrift(snapshots);
-    await loadSwipeQueue();
-
-    likedBmsIds = new Set((feedback.liked || []).map(Number));
-
-    setupTasteFeedbackModal();
-  } catch (err) {
-    console.error('Error loading taste tab:', err);
-    toast('Failed to load taste profile', 'error');
-  }
-}
-
-function renderTasteProfile(stats) {
-  const container = document.querySelector('[data-taste-profile]');
-  if (!container) return;
-
-  const axes = stats.axes || [];
-  const weights = stats.type_weights || {};
-  const skillGap = stats.skill_gap || 'Unknown';
-
-  const ctx = document.getElementById('tasteChart');
-  if (ctx && window.Chart) {
-    try {
-      new Chart(ctx, {
-        type: 'radar',
-        data: {
-          labels: axes.map(a => a.name || '?'),
-          datasets: [{
-            label: 'Taste Profile',
-            data: axes.map(a => a.value || 0),
-            borderColor: '#ff6b9d',
-            backgroundColor: 'rgba(255, 107, 157, 0.2)',
-            pointBackgroundColor: '#ff6b9d',
-            tension: 0.2
-          }]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            r: {
-              max: 100,
-              beginAtZero: true
-            }
-          }
+    const params = new URLSearchParams({ sr, ar, bpm });
+    fetch(`/api/recommendations/explore?${params}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (loading) loading.classList.add("hidden");
+        if (data.error) throw new Error(data.error);
+        exploreData = data.recommendations || [];
+        if (grid) {
+          grid.innerHTML = "";
+          exploreData.forEach((rec) => grid.appendChild(buildRecCard(rec)));
+          grid.classList.remove("hidden");
         }
+        if (exploreData.length === 0) {
+          toast("No maps found matching those criteria", "info");
+        }
+      })
+      .catch((err) => {
+        if (loading) loading.classList.add("hidden");
+        const msg = $("explore-error-msg");
+        if (msg) msg.textContent = err.message || "Something went wrong";
+        if (error) error.classList.remove("hidden");
       });
-    } catch (e) {
-      console.error('Chart error:', e);
-    }
-  }
+  };
 
-  let breakdownHtml = '<div class="taste-breakdown">';
-  for (const [type, weight] of Object.entries(weights)) {
-    breakdownHtml += `
-      <div class="weight-item">
-        <span class="type">${esc(type)}</span>
-        <div class="bar">
-          <div class="fill" style="width: ${weight * 100}%"></div>
+  /* ─── Liked Tab ─────────────────────────────────────────────── */
+
+  function loadLikedTab() {
+    likedTabLoaded = true;
+    const loading = $("liked-loading");
+    const empty = $("liked-empty");
+    const grid = $("liked-grid");
+    if (loading) loading.classList.remove("hidden");
+    if (empty) empty.classList.add("hidden");
+    if (grid) { grid.classList.add("hidden"); grid.innerHTML = ""; }
+
+    fetch("/api/feedback")
+      .then((r) => r.json())
+      .then((data) => {
+        if (loading) loading.classList.add("hidden");
+        const entries = data.entries || [];
+        likedIds = new Set(data.liked || []);
+        if (entries.length === 0) {
+          if (empty) empty.classList.remove("hidden");
+          return;
+        }
+        entries.forEach((entry) => grid.appendChild(buildLikedCard(entry)));
+        if (grid) grid.classList.remove("hidden");
+      })
+      .catch(() => {
+        if (loading) loading.classList.add("hidden");
+        toast("Failed to load liked maps", "error");
+      });
+  }
+  window.loadLikedTab = loadLikedTab;
+
+  function buildLikedCard(entry) {
+    const bmsId = entry.bms_id;
+    const sr = entry.sr || 0;
+    const title = entry.title || `Beatmapset #${bmsId}`;
+    const artist = entry.artist || "—";
+    const creator = entry.creator || "—";
+    const version = entry.version || "";
+    const cover = entry.covers?.cover
+      ? entry.covers.cover
+      : `https://assets.ppy.sh/beatmaps/${bmsId}/covers/cover.jpg`;
+    const types = entry.map_types || [];
+
+    const card = document.createElement("div");
+    card.className = "rec-card";
+    card.dataset.bmsId = bmsId;
+    card.innerHTML = `
+      <div class="rec-cover" style="background-image:url('${escHtml(cover)}')">
+        <div class="rec-cover-overlay"></div>
+        <span class="rec-stars ${starColorClass(sr)}">★ ${sr.toFixed(2)}</span>
+        <button class="rec-preview-btn" title="Preview audio" aria-label="Preview audio">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+      </div>
+      <div class="rec-body">
+        <div class="rec-title">${escHtml(title)}${version ? ` <span class="play-diff">[${escHtml(version)}]</span>` : ""}</div>
+        <div class="rec-mapper">${escHtml(artist)} // ${escHtml(creator)}</div>
+        <div class="rec-attrs">
+          ${entry.ar != null ? `<span class="attr-chip">AR ${entry.ar}</span>` : ""}
+          ${entry.bpm != null ? `<span class="attr-chip">BPM ${Math.round(entry.bpm)}</span>` : ""}
         </div>
-        <span class="value">${(weight * 100).toFixed(0)}%</span>
+        ${types.length ? `<div class="rec-types">${renderTypeBadges(types)}</div>` : ""}
+      </div>
+      <div class="rec-actions">
+        <button class="rec-action-btn rec-unlike-btn" title="Remove from liked" data-action="unlike" aria-label="Remove from liked">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <a href="https://osu.ppy.sh/beatmapsets/${bmsId}" target="_blank" rel="noopener" class="rec-action-btn" title="View on osu!">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+        </a>
+        <a href="osu://dl/${bmsId}" class="rec-action-btn" title="Download" aria-label="Download">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        </a>
       </div>
     `;
-  }
-  breakdownHtml += '</div>';
 
-  const gapBadge = `<div class="skill-gap-badge">Skill Gap: ${esc(skillGap)}</div>`;
+    // Preview audio
+    card.querySelector(".rec-preview-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      playPreview(bmsId, title, artist, cover);
+    });
 
-  container.innerHTML = breakdownHtml + gapBadge;
-}
-
-function renderTasteDrift(snapshots) {
-  const container = document.querySelector('[data-taste-drift]');
-  if (!container || !snapshots.data) return;
-
-  const data = snapshots.data || [];
-  const ctx = document.getElementById('driftChart');
-
-  if (ctx && window.Chart && data.length > 0) {
-    try {
-      new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: data.map((_, i) => `Week ${i + 1}`),
-          datasets: [{
-            label: 'Taste Drift',
-            data: data,
-            borderColor: '#00d4ff',
-            tension: 0.3,
-            fill: false
-          }]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            y: {
-              beginAtZero: true
-            }
+    // Unlike
+    card.querySelector('[data-action="unlike"]')?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      card.classList.add("dismissing");
+      fetch(`/api/feedback/like/${bmsId}`, { method: "DELETE" })
+        .then((r) => r.json())
+        .then(() => {
+          likedIds.delete(bmsId);
+          setTimeout(() => card.remove(), 350);
+          toast("Removed from liked", "info");
+          // Check if grid is empty now
+          const grid = $("liked-grid");
+          if (grid && grid.children.length <= 1) {
+            $("liked-empty")?.classList.remove("hidden");
+            grid.classList.add("hidden");
           }
-        }
+        })
+        .catch(() => {
+          card.classList.remove("dismissing");
+          toast("Failed to remove", "error");
+        });
+    });
+
+    return card;
+  }
+
+  /* ─── Taste Profile Tab ─────────────────────────────────────── */
+
+  function loadTasteProfile() {
+    tasteTabLoaded = true;
+    Promise.all([
+      fetch("/api/profile-stats").then((r) => r.json()),
+      fetch("/api/taste-snapshots").then((r) => r.json()),
+      fetch("/api/recommendations").then((r) => r.json()),
+    ])
+      .then(([stats, snapshots, recs]) => {
+        renderTasteRadar(stats);
+        renderTasteDrift(snapshots);
+        // Use recs for swipe queue
+        swipeQueue = (recs.recommendations || []).slice(0, 20);
+        swipeIdx = 0;
+        renderSwipeCard();
+      })
+      .catch((err) => {
+        console.error("Taste profile error:", err);
+        toast("Failed to load taste profile", "error");
       });
-    } catch (e) {
-      console.error('Drift chart error:', e);
+  }
+
+  function renderTasteRadar(stats) {
+    if (stats.error) return;
+    const canvas = $("taste-radar");
+    if (!canvas) return;
+    const axes = stats.axes || [];
+    const typeWeights = stats.type_weights || {};
+    const dominantMods = stats.dominant_mods || [];
+    const skillGap = stats.skill_gap;
+
+    // Radar chart with Chart.js
+    const labels = axes.map((a) => a.label);
+    const values = axes.map((a) => ((a.value || 0) / (a.max || 1)) * 100);
+
+    if (_radarChart) _radarChart.destroy();
+    _radarChart = new Chart(canvas, {
+      type: "radar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Your Profile",
+            data: values,
+            backgroundColor: "rgba(255,45,120,0.15)",
+            borderColor: "#ff2d78",
+            borderWidth: 2,
+            pointBackgroundColor: "#ff2d78",
+            pointRadius: 4,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        scales: {
+          r: {
+            beginAtZero: true,
+            max: 100,
+            ticks: { display: false },
+            grid: { color: "rgba(255,255,255,0.08)" },
+            angleLines: { color: "rgba(255,255,255,0.08)" },
+            pointLabels: { color: "#ccc", font: { size: 11 } },
+          },
+        },
+        plugins: { legend: { display: false } },
+      },
+    });
+
+    // Type chips
+    const chipsEl = $("taste-type-chips");
+    if (chipsEl) {
+      const sorted = Object.entries(typeWeights).sort((a, b) => b[1] - a[1]);
+      chipsEl.innerHTML = sorted
+        .map(([t, w]) => {
+          const cls = "type-" + t.toLowerCase().replace(/\s+/g, "-");
+          return `<span class="type-badge ${cls}">${t} ${(w * 100).toFixed(0)}%</span>`;
+        })
+        .join("");
     }
-  }
-}
 
-async function loadSwipeQueue() {
-  try {
-    const resp = await fetch('/api/recommendations');
-    if (!resp.ok) throw new Error('Failed to load');
-    const data = await resp.json();
-    swipeQueue = data.recommendations || [];
-    currentSwipeIndex = 0;
-    showNextSwipeCard();
-  } catch (err) {
-    console.error('Error loading swipe queue:', err);
-    toast('Failed to load swipe queue', 'error');
-  }
-}
-
-function showNextSwipeCard() {
-  const container = document.getElementById('swipe-container');
-  if (!container) return;
-
-  if (currentSwipeIndex >= swipeQueue.length) {
-    container.innerHTML = '<div class="swipe-end">No more maps to discover! Refresh recommendations to get more.</div>';
-    return;
-  }
-
-  const rec = swipeQueue[currentSwipeIndex];
-  const bm = rec.beatmap || {};
-  const bms = rec.beatmapset || {};
-  const bmsId = bms.id || bm.beatmapset_id || 0;
-  const covers = bms.covers || {};
-  const coverUrl = covers['cover@2x'] || covers['cover'] ||
-    `https://assets.ppy.sh/beatmaps/${bmsId}/covers/cover.jpg`;
-  const sr = bm.difficulty_rating ? bm.difficulty_rating.toFixed(2) : '?';
-  const srClass = starColorClass(parseFloat(sr));
-  const ar = bm.ar ? `AR${parseFloat(bm.ar).toFixed(1)}` : '';
-  const bpmStr = bm.bpm ? `${Math.round(bm.bpm)} BPM` : '';
-  const length = bm.total_length ? fmtLen(bm.total_length) : '';
-
-  container.innerHTML = `
-    <div class="swipe-card" id="swipe-card">
-      <div class="swipe-card-inner">
-        <div class="swipe-cover">
-          <img src="${coverUrl}" alt="" onerror="this.style.opacity=0" />
-          <div class="swipe-cover-overlay"></div>
-          <div class="swipe-stars ${srClass}">★ ${sr}</div>
-        </div>
-        <div class="swipe-body">
-          <div class="swipe-title">${esc(bms.title || bm.title || 'Unknown')}</div>
-          <div class="swipe-artist">${esc(bms.artist || '')} · mapped by ${esc(bms.creator || '?')}</div>
-          <div class="swipe-attrs">
-            ${ar ? `<span class="attr-chip ar">${ar}</span>` : ''}
-            ${bpmStr ? `<span class="attr-chip bpm">${bpmStr}</span>` : ''}
-            ${length ? `<span class="attr-chip">${length}</span>` : ''}
+    // Breakdown
+    const breakdown = $("taste-breakdown");
+    if (breakdown) {
+      let html = '<div class="taste-detail-list">';
+      axes.forEach((a) => {
+        html += `<div class="taste-detail-row">
+          <span class="taste-detail-label">${a.label}</span>
+          <div class="taste-detail-bar-wrap">
+            <div class="taste-detail-bar" style="width:${((a.value / a.max) * 100).toFixed(1)}%"></div>
           </div>
-          ${renderTypeBadges(bm.map_types)}
-          ${rec.reason ? `<div class="rec-reason" style="margin-top:0.5rem">💡 ${esc(rec.reason)}</div>` : ''}
-        </div>
-      </div>
-      <div class="swipe-indicator swipe-yes">TRY IT</div>
-      <div class="swipe-indicator swipe-no">SKIP</div>
-    </div>
-  `;
-}
-
-function swipeAction(direction) {
-  if (currentSwipeIndex >= swipeQueue.length) return;
-
-  const rec = swipeQueue[currentSwipeIndex];
-  const bm = rec.beatmap || {};
-  const bms = rec.beatmapset || {};
-  const bmsId = bms.id || bm.beatmapset_id || 0;
-  const action = direction === 'right' ? 'approve' : 'skip';
-
-  swipeHistory.push({
-    bmsId,
-    title: bms.title || bm.title || '?',
-    action,
-    timestamp: new Date().toISOString()
-  });
-
-  if (direction === 'right') {
-    likeRec(bmsId, bm, bms, null);
-  } else {
-    dismissRec(bmsId, null);
-  }
-
-  const container = document.getElementById('swipe-container');
-  if (container) {
-    const swipeCard = container.querySelector('.swipe-card');
-    if (swipeCard) {
-      swipeCard.classList.add(direction === 'right' ? 'swiping-right' : 'swiping-left');
-      setTimeout(() => {
-        currentSwipeIndex++;
-        showNextSwipeCard();
-      }, 350);
-    }
-  }
-}
-
-function previewSwipeMap() {
-  if (currentSwipeIndex >= swipeQueue.length) return;
-  const rec = swipeQueue[currentSwipeIndex];
-  const bms = rec.beatmapset || {};
-  const bm = rec.beatmap || {};
-  const bmsId = bms.id || bm.beatmapset_id || 0;
-  if (bmsId) togglePreview(bmsId, null);
-}
-
-function openTasteFeedback() {
-  document.getElementById('taste-feedback-modal')?.classList.remove('hidden');
-}
-
-function closeTasteFeedback() {
-  document.getElementById('taste-feedback-modal')?.classList.add('hidden');
-  const textarea = document.getElementById('taste-feedback-text');
-  if (textarea) textarea.value = '';
-}
-
-function submitTasteFeedback() {
-  const textarea = document.getElementById('taste-feedback-text');
-  const feedback = textarea?.value?.trim();
-
-  if (!feedback) {
-    toast('Please enter some feedback', 'err');
-    return;
-  }
-
-  // Store feedback locally (could be sent to API in future)
-  toast('Thank you! Your feedback has been noted.', 'ok');
-  closeTasteFeedback();
-}
-
-// ============================================================================
-// SETTINGS TAB
-// ============================================================================
-
-async function loadSettingsTab() {
-  try {
-    await loadProfiles();
-    loadSwipeHistory();
-    setupSettingsEventListeners();
-  } catch (err) {
-    console.error('Error loading settings tab:', err);
-  }
-}
-
-function setupSettingsEventListeners() {
-  initDualSlider('#global-sr-slider', 'global-sr-min', 'global-sr-max', 0, 20, 0.1);
-
-  const saveDiffBtn = document.getElementById('save-difficulty-btn');
-  if (saveDiffBtn) {
-    saveDiffBtn.addEventListener('click', saveGlobalDifficulty);
-  }
-
-  const clearDiffBtn = document.getElementById('clear-difficulty-btn');
-  if (clearDiffBtn) {
-    clearDiffBtn.addEventListener('click', clearGlobalDifficulty);
-  }
-
-  const testCredsBtn = document.getElementById('test-creds-btn');
-  if (testCredsBtn) {
-    testCredsBtn.addEventListener('click', testCredentials);
-  }
-}
-
-function saveGlobalDifficulty() {
-  const minInput = document.getElementById('global-sr-min');
-  const maxInput = document.getElementById('global-sr-max');
-
-  if (!minInput || !maxInput) return;
-
-  globalSrMin = parseFloat(minInput.value);
-  globalSrMax = parseFloat(maxInput.value);
-
-  localStorage.setItem('globalSrMin', globalSrMin);
-  localStorage.setItem('globalSrMax', globalSrMax);
-
-  toast('Global difficulty saved', 'success');
-}
-
-function clearGlobalDifficulty() {
-  globalSrMin = null;
-  globalSrMax = null;
-
-  localStorage.removeItem('globalSrMin');
-  localStorage.removeItem('globalSrMax');
-
-  const minInput = document.getElementById('global-sr-min');
-  const maxInput = document.getElementById('global-sr-max');
-  if (minInput) minInput.value = 0;
-  if (maxInput) maxInput.value = 20;
-
-  toast('Global difficulty cleared', 'success');
-}
-
-function loadSwipeHistory() {
-  const container = document.querySelector('[data-swipe-history]');
-  if (!container) return;
-
-  if (swipeHistory.length === 0) {
-    container.innerHTML = '<p>No swipe history yet</p>';
-    return;
-  }
-
-  let html = '<div class="history-list">';
-  for (let i = swipeHistory.length - 1; i >= 0; i--) {
-    const item = swipeHistory[i];
-    const actionClass = item.action === 'approve' ? 'approved' : 'skipped';
-    const actionLabel = item.action === 'approve' ? '✓ Approved' : '✕ Skipped';
-
-    html += `
-      <div class="history-item ${actionClass}">
-        <div class="item-title">${esc(item.title)}</div>
-        <span class="item-action">${actionLabel}</span>
-      </div>
-    `;
-  }
-  html += '</div>';
-  container.innerHTML = html;
-}
-
-async function testCredentials() {
-  try {
-    const resp = await fetch('/api/test-credentials', { method: 'POST' });
-    if (!resp.ok) throw new Error('Failed');
-    const data = await resp.json();
-
-    if (data.success || data.ok) {
-      toast('Credentials valid!', 'success');
-    } else {
-      toast('Credentials invalid: ' + (data.error || 'Unknown error'), 'error');
-    }
-  } catch (err) {
-    console.error('Error testing credentials:', err);
-    toast('Failed to test credentials', 'error');
-  }
-}
-
-// ============================================================================
-// MINI PLAYER
-// ============================================================================
-
-function togglePreview(bmsId, btn) {
-  const player = document.querySelector('[data-player-bar]');
-  if (!player) return;
-
-  const preview_url = `https://b.ppy.sh/preview/${bmsId}.mp3`;
-
-  if (player.dataset.currentBmsId === String(bmsId)) {
-    playerToggle();
-  } else {
-    player.dataset.currentBmsId = bmsId;
-    const audio = document.querySelector('#preview-audio');
-    if (audio) {
-      audio.src = preview_url;
-      audio.volume = 0.3;
-      playerPlay();
-    }
-  }
-}
-
-function playerToggle() {
-  const audio = document.querySelector('#preview-audio');
-  if (!audio) return;
-
-  if (audio.paused) {
-    audio.play();
-    const btn = document.querySelector('[data-player-play-btn]');
-    if (btn) btn.textContent = '⏸';
-  } else {
-    audio.pause();
-    const btn = document.querySelector('[data-player-play-btn]');
-    if (btn) btn.textContent = '▶';
-  }
-}
-
-function playerPlay() {
-  const audio = document.querySelector('#preview-audio');
-  if (audio) {
-    audio.play();
-    const btn = document.querySelector('[data-player-play-btn]');
-    if (btn) btn.textContent = '⏸';
-  }
-}
-
-function playerStop() {
-  const audio = document.querySelector('#preview-audio');
-  if (audio) {
-    audio.pause();
-    audio.currentTime = 0;
-    const btn = document.querySelector('[data-player-play-btn]');
-    if (btn) btn.textContent = '▶';
-  }
-}
-
-function playerSeek(time) {
-  const audio = document.querySelector('#preview-audio');
-  if (audio) {
-    audio.currentTime = time;
-  }
-}
-
-function playerVolume(vol) {
-  const audio = document.querySelector('#preview-audio');
-  if (audio) {
-    audio.volume = Math.max(0, Math.min(1, vol));
-  }
-}
-
-// ============================================================================
-// SSE (SERVER-SENT EVENTS)
-// ============================================================================
-
-function startSSE() {
-  if (sseSource) sseSource.close();
-
-  sseSource = new EventSource('/events');
-
-  sseSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.event === 'new_play') {
-        toast('New top play detected!', 'info');
-        loadTopPlays();
-        loadCurrentRecommendations();
+          <span class="taste-detail-val">${a.value}</span>
+        </div>`;
+      });
+      if (dominantMods.length) {
+        html += `<div class="taste-detail-row"><span class="taste-detail-label">Dominant Mods</span><span class="taste-detail-val">+${dominantMods.join("")}</span></div>`;
       }
-    } catch (e) {
-      console.error('SSE parse error:', e);
+      html += "</div>";
+      breakdown.innerHTML = html;
+    }
+
+    // Skill gap badge
+    const gapBadge = $("skill-gap-badge");
+    if (gapBadge) {
+      if (skillGap) {
+        gapBadge.textContent = `Skill Gap: ${skillGap}`;
+        gapBadge.classList.remove("hidden");
+      } else {
+        gapBadge.classList.add("hidden");
+      }
+    }
+  }
+
+  function renderTasteDrift(data) {
+    const canvas = $("drift-chart");
+    const card = $("drift-chart-card");
+    if (!canvas || !data.snapshots || data.snapshots.length < 2) return;
+    if (card) card.classList.remove("hidden");
+
+    const snaps = data.snapshots;
+    const labels = snaps.map((s) => s.date);
+    const srData = snaps.map((s) => s.sr);
+    const arData = snaps.map((s) => s.ar);
+    const bpmData = snaps.map((s) => (s.bpm || 0) / 10);
+
+    if (_driftChart) _driftChart.destroy();
+    _driftChart = new Chart(canvas, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "SR", data: srData, borderColor: "#ff2d78", borderWidth: 2, tension: 0.3, pointRadius: 3 },
+          { label: "AR", data: arData, borderColor: "#00e5ff", borderWidth: 2, tension: 0.3, pointRadius: 3 },
+          { label: "BPM/10", data: bpmData, borderColor: "#a78bfa", borderWidth: 2, tension: 0.3, pointRadius: 3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          x: { ticks: { color: "#888", maxTicksLimit: 10 }, grid: { color: "rgba(255,255,255,0.05)" } },
+          y: { ticks: { color: "#888" }, grid: { color: "rgba(255,255,255,0.05)" } },
+        },
+        plugins: { legend: { labels: { color: "#ccc" } } },
+      },
+    });
+  }
+
+  /* ─── Swipe Feature ─────────────────────────────────────────── */
+
+  function renderSwipeCard() {
+    if (swipeIdx >= swipeQueue.length) {
+      $("swipe-title") && ($("swipe-title").textContent = "No more maps!");
+      $("swipe-artist") && ($("swipe-artist").textContent = "Refresh recommendations to get more.");
+      $("swipe-attrs") && ($("swipe-attrs").innerHTML = "");
+      $("swipe-types") && ($("swipe-types").innerHTML = "");
+      $("swipe-cover-img") && ($("swipe-cover-img").src = "");
+      $("swipe-stars") && ($("swipe-stars").textContent = "");
+      return;
+    }
+    const rec = swipeQueue[swipeIdx];
+    const bm = rec.beatmap || {};
+    const bms = rec.beatmapset || {};
+    const sr = bm.difficulty_rating || 0;
+    const cover = coverUrl(bms);
+
+    $("swipe-cover-img") && ($("swipe-cover-img").src = cover);
+    $("swipe-title") && ($("swipe-title").textContent = bms.title || "—");
+    $("swipe-artist") && ($("swipe-artist").textContent = `${bms.artist || "—"} // ${bms.creator || "—"}`);
+    $("swipe-stars") && ($("swipe-stars").textContent = `★ ${sr.toFixed(2)}`);
+    $("swipe-stars")?.setAttribute("class", `swipe-stars ${starColorClass(sr)}`);
+
+    const attrs = $("swipe-attrs");
+    if (attrs) {
+      attrs.innerHTML = `
+        <span class="attr-chip">AR ${bm.ar || 0}</span>
+        <span class="attr-chip">BPM ${bm.bpm || 0}</span>
+        <span class="attr-chip">${formatLength(bm.total_length)}</span>
+      `;
+    }
+
+    const typesEl = $("swipe-types");
+    if (typesEl) typesEl.innerHTML = renderTypeBadges(bm.map_types);
+
+    // Reset card position
+    const card = $("swipe-card");
+    if (card) {
+      card.classList.remove("swiping-left", "swiping-right");
+      card.style.transform = "";
+      card.style.opacity = "";
+    }
+  }
+
+  window.swipeAction = function (direction) {
+    if (swipeIdx >= swipeQueue.length) return;
+    const rec = swipeQueue[swipeIdx];
+    const bms = rec.beatmapset || {};
+    const bm = rec.beatmap || {};
+    const card = $("swipe-card");
+
+    if (card) {
+      card.classList.add(direction === "right" ? "swiping-right" : "swiping-left");
+    }
+
+    if (direction === "right") {
+      // Like / approve
+      fetch("/api/feedback/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beatmapset_id: bms.id, beatmap_id: bm.id, bm, bms }),
+      })
+        .then((r) => r.json())
+        .then(() => {
+          likedIds.add(bms.id);
+          toast("Added to liked!", "success");
+        })
+        .catch(() => {});
+    } else {
+      // Skip / dismiss
+      fetch("/api/dismissed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beatmapset_id: bms.id, bm, bms }),
+      })
+        .then((r) => r.json())
+        .then(() => {
+          dismissedIds.add(bms.id);
+        })
+        .catch(() => {});
+    }
+
+    setTimeout(() => {
+      swipeIdx++;
+      renderSwipeCard();
+    }, 400);
+  };
+
+  window.previewSwipeMap = function () {
+    if (swipeIdx >= swipeQueue.length) return;
+    const rec = swipeQueue[swipeIdx];
+    const bms = rec.beatmapset || {};
+    playPreview(bms.id, bms.title, bms.artist, coverUrl(bms));
+  };
+
+  /* ─── Taste Feedback Modal ──────────────────────────────────── */
+
+  window.openTasteFeedback = function () {
+    $("taste-feedback-modal")?.classList.remove("hidden");
+  };
+  window.closeTasteFeedback = function () {
+    $("taste-feedback-modal")?.classList.add("hidden");
+  };
+  window.submitTasteFeedback = function () {
+    const text = $("taste-feedback-text")?.value?.trim();
+    if (!text) {
+      toast("Please enter some feedback", "error");
+      return;
+    }
+    toast("Thanks for your feedback!", "success");
+    $("taste-feedback-modal")?.classList.add("hidden");
+    if ($("taste-feedback-text")) $("taste-feedback-text").value = "";
+  };
+
+  /* ─── Settings ──────────────────────────────────────────────── */
+
+  function populateSettings() {
+    if (!meData) return;
+    const topN = $("settings-top-n");
+    const pollInterval = $("settings-poll-interval");
+    const recCount = $("settings-rec-count");
+    const useRecent = $("settings-use-recent");
+    const username = $("settings-username");
+    const clientId = $("settings-client-id");
+
+    if (topN) topN.value = meData.top_n || 20;
+    if (pollInterval) pollInterval.value = meData.poll_interval || 30;
+    if (recCount) recCount.value = meData.rec_count || 12;
+    if (useRecent) useRecent.checked = meData.use_recent_plays !== false;
+
+    // Global SR filter
+    const srMin = $("global-sr-min");
+    const srMax = $("global-sr-max");
+    if (srMin && meData.sr_min != null) srMin.value = meData.sr_min;
+    if (srMax && meData.sr_max != null) srMax.value = meData.sr_max;
+
+    // Mode-specific settings visibility
+    if (meData.oauth_mode) {
+      $("profiles-card")?.classList.add("hidden");
+      $("credentials-card")?.classList.add("hidden");
+      $("oauth-info-card")?.classList.remove("hidden");
+      $("poll-interval-group")?.classList.add("hidden");
+    } else {
+      $("profiles-card")?.classList.remove("hidden");
+      $("credentials-card")?.classList.remove("hidden");
+      $("oauth-info-card")?.classList.add("hidden");
+      $("poll-interval-group")?.classList.remove("hidden");
+      if (username) username.value = meData.username || "";
+      loadProfilesList();
+    }
+
+    // Preferred mods
+    const prefMods = meData.preferred_mods || [];
+    $qa("#mod-toggles .mod-toggle[data-mod]").forEach((btn) => {
+      const mod = btn.dataset.mod;
+      const active = mod === "NM" ? prefMods.length === 0 : prefMods.includes(mod);
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function setupModToggles() {
+    $qa("#mod-toggles .mod-toggle[data-mod]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mod = btn.dataset.mod;
+        if (mod === "NM") {
+          // Clear all mods
+          $qa("#mod-toggles .mod-toggle[data-mod]").forEach((b) => {
+            b.classList.remove("active");
+            b.setAttribute("aria-pressed", "false");
+          });
+          btn.classList.add("active");
+          btn.setAttribute("aria-pressed", "true");
+        } else {
+          // Deactivate NM
+          const nm = $q('#mod-toggles .mod-toggle[data-mod="NM"]');
+          if (nm) { nm.classList.remove("active"); nm.setAttribute("aria-pressed", "false"); }
+          // Handle incompatibility
+          if (modIncompat(getSelectedMods(), mod)) {
+            const incompat = { HR: "EZ", EZ: "HR", DT: "HT", HT: "DT" }[mod];
+            const ib = $q(`#mod-toggles .mod-toggle[data-mod="${incompat}"]`);
+            if (ib) { ib.classList.remove("active"); ib.setAttribute("aria-pressed", "false"); }
+          }
+          btn.classList.toggle("active");
+          btn.setAttribute("aria-pressed", btn.classList.contains("active") ? "true" : "false");
+        }
+      });
+    });
+  }
+
+  function getSelectedMods() {
+    const mods = [];
+    $qa("#mod-toggles .mod-toggle.active[data-mod]").forEach((b) => {
+      if (b.dataset.mod !== "NM") mods.push(b.dataset.mod);
+    });
+    return mods;
+  }
+
+  window.saveSettings = function () {
+    const body = {
+      top_n: parseInt($("settings-top-n")?.value) || 20,
+      poll_interval: parseInt($("settings-poll-interval")?.value) || 30,
+      rec_count: parseInt($("settings-rec-count")?.value) || 12,
+    };
+    fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          const ok = $("settings-save-ok");
+          if (ok) { ok.classList.remove("hidden"); setTimeout(() => ok.classList.add("hidden"), 2000); }
+          toast("Settings saved", "success");
+        }
+      })
+      .catch(() => toast("Failed to save settings", "error"));
+  };
+
+  window.saveRecPrefs = function () {
+    const mods = getSelectedMods();
+    const useRecent = $("settings-use-recent")?.checked ?? true;
+    fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preferred_mods: mods, use_recent_plays: useRecent }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          const ok = $("recprefs-save-ok");
+          if (ok) { ok.classList.remove("hidden"); setTimeout(() => ok.classList.add("hidden"), 2000); }
+          toast("Preferences saved", "success");
+        }
+      })
+      .catch(() => toast("Failed to save preferences", "error"));
+  };
+
+  window.saveGlobalDifficulty = function () {
+    const srMin = parseFloat($("global-sr-min")?.value) || null;
+    const srMax = parseFloat($("global-sr-max")?.value) || null;
+    fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sr_min: srMin, sr_max: srMax }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          toast("Global difficulty filter applied", "success");
+          if (meData) { meData.sr_min = srMin; meData.sr_max = srMax; }
+        }
+      })
+      .catch(() => toast("Failed to save", "error"));
+  };
+
+  window.clearGlobalDifficulty = function () {
+    fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sr_min: null, sr_max: null }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          $("global-sr-min") && ($("global-sr-min").value = "");
+          $("global-sr-max") && ($("global-sr-max").value = "");
+          if (meData) { meData.sr_min = null; meData.sr_max = null; }
+          toast("Global filter cleared", "success");
+        }
+      })
+      .catch(() => toast("Failed to clear", "error"));
+  };
+
+  window.testCredentials = function () {
+    const result = $("settings-test-result");
+    const username = $("settings-username")?.value?.trim();
+    const clientId = $("settings-client-id")?.value?.trim();
+    const clientSecret = $("settings-client-secret")?.value?.trim();
+
+    if (!username || !clientId) {
+      if (result) { result.textContent = "Username and Client ID are required"; result.className = "test-result error"; result.classList.remove("hidden"); }
+      return;
+    }
+    if (result) { result.textContent = "Testing..."; result.className = "test-result"; result.classList.remove("hidden"); }
+
+    fetch("/api/test-credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, client_id: clientId, client_secret: clientSecret || undefined }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok) {
+          result.textContent = `Connected! Found ${data.user?.username || username}`;
+          result.className = "test-result success";
+        } else {
+          result.textContent = `${data.error || "Failed"}`;
+          result.className = "test-result error";
+        }
+        result.classList.remove("hidden");
+      })
+      .catch((err) => {
+        result.textContent = `${err.message}`;
+        result.className = "test-result error";
+        result.classList.remove("hidden");
+      });
+  };
+
+  window.saveActiveProfileCredentials = function () {
+    const username = $("settings-username")?.value?.trim();
+    const clientId = $("settings-client-id")?.value?.trim();
+    const clientSecret = $("settings-client-secret")?.value?.trim();
+
+    if (!meData?.active_id) {
+      toast("No active profile", "error");
+      return;
+    }
+
+    const body = { username };
+    if (clientId) body.client_id = clientId;
+    if (clientSecret) body.client_secret = clientSecret;
+
+    fetch(`/api/profiles/${meData.active_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok || data.id) {
+          toast("Credentials saved", "success");
+          loadMe();
+        } else {
+          toast(data.error || "Failed to save", "error");
+        }
+      })
+      .catch(() => toast("Failed to save credentials", "error"));
+  };
+
+  /* ─── Export ────────────────────────────────────────────────── */
+
+  window.exportRecs = function () {
+    if (recsData.length === 0) { toast("No recommendations to export", "info"); return; }
+    let text = "osu!helper Recommendations\n\n";
+    recsData.forEach((r, i) => {
+      const bms = r.beatmapset || {};
+      const bm = r.beatmap || {};
+      text += `${i + 1}. ${bms.artist} - ${bms.title} [${bm.version || ""}] (${(bm.difficulty_rating || 0).toFixed(2)})\n`;
+      text += `   https://osu.ppy.sh/beatmapsets/${bms.id}#osu/${bm.id}\n\n`;
+    });
+    downloadText(text, "recommendations.txt");
+  };
+
+  window.exportLiked = function () {
+    toast("Exporting liked maps...", "info");
+    fetch("/api/feedback")
+      .then((r) => r.json())
+      .then((data) => {
+        const entries = data.entries || [];
+        if (entries.length === 0) { toast("No liked maps", "info"); return; }
+        let text = "osu!helper Liked Maps\n\n";
+        entries.forEach((e, i) => {
+          text += `${i + 1}. ${e.title || "?"} (${(e.sr || 0).toFixed(2)})\n`;
+          text += `   https://osu.ppy.sh/beatmapsets/${e.bms_id}\n\n`;
+        });
+        downloadText(text, "liked_maps.txt");
+      })
+      .catch(() => toast("Failed to export", "error"));
+  };
+
+  function downloadText(text, filename) {
+    const blob = new Blob([text], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /* ─── Profile Management (Local Mode) ──────────────────────── */
+
+  function loadProfilesList() {
+    fetch("/api/profiles")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.oauth_mode) return;
+        const list = $("profiles-list");
+        const menuList = $("profile-menu-list");
+        if (!list) return;
+        const profiles = data.profiles || [];
+        const activeId = data.active_id;
+
+        list.innerHTML = profiles
+          .map(
+            (p) => `
+          <div class="profile-row ${p.id === activeId ? "active" : ""}">
+            <div class="profile-row-info">
+              <strong>${escHtml(p.display_name || p.username || "Unnamed")}</strong>
+              <span class="profile-row-sub">${escHtml(p.username || "—")} ${p.pp ? `· ${Math.round(p.pp)}pp` : ""}</span>
+            </div>
+            <div class="profile-row-actions">
+              ${p.id !== activeId ? `<button class="btn btn-ghost btn-xs" onclick="activateProfile('${p.id}')">Switch</button>` : '<span class="badge-active">Active</span>'}
+              ${profiles.length > 1 ? `<button class="btn btn-ghost btn-xs btn-danger" onclick="deleteProfile('${p.id}')">Delete</button>` : ""}
+            </div>
+          </div>
+        `
+          )
+          .join("");
+
+        // Also update profile menu dropdown
+        if (menuList) {
+          menuList.innerHTML = profiles
+            .map(
+              (p) => `
+            <button class="profile-menu-item ${p.id === activeId ? "active" : ""}" onclick="activateProfile('${p.id}')" role="menuitem">
+              <span>${escHtml(p.display_name || p.username || "Unnamed")}</span>
+              ${p.pp ? `<span class="profile-menu-pp">${Math.round(p.pp)}pp</span>` : ""}
+            </button>
+          `
+            )
+            .join("");
+        }
+      })
+      .catch(() => {});
+  }
+
+  window.activateProfile = function (profileId) {
+    fetch(`/api/profiles/${profileId}/activate`, { method: "POST" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok || data.active_id) {
+          toast("Profile switched", "success");
+          playsData = [];
+          recsData = [];
+          likedTabLoaded = false;
+          tasteTabLoaded = false;
+          loadMe().then(() => {
+            loadTopPlays();
+            loadProfilesList();
+          });
+        }
+      })
+      .catch(() => toast("Failed to switch profile", "error"));
+  };
+
+  window.deleteProfile = function (profileId) {
+    showConfirm("Delete this profile? This cannot be undone.", () => {
+      fetch(`/api/profiles/${profileId}`, { method: "DELETE" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok) {
+            toast("Profile deleted", "info");
+            loadProfilesList();
+            loadMe();
+          }
+        })
+        .catch(() => toast("Failed to delete", "error"));
+    });
+  };
+
+  window.toggleProfileMenu = function () {
+    const menu = $("profile-menu");
+    if (!menu) return;
+    const isHidden = menu.classList.contains("hidden");
+    menu.classList.toggle("hidden");
+    $("profile-chip-btn")?.setAttribute("aria-expanded", isHidden ? "true" : "false");
+    if (isHidden) {
+      // Close on outside click
+      setTimeout(() => {
+        document.addEventListener("click", closeProfileMenuOutside, { once: true });
+      }, 0);
     }
   };
 
-  sseSource.onerror = (err) => {
-    console.error('SSE error:', err);
-    sseSource.close();
+  function closeProfileMenuOutside(e) {
+    const menu = $("profile-menu");
+    const chip = $("profile-chip-btn");
+    if (menu && !menu.contains(e.target) && !chip?.contains(e.target)) {
+      menu.classList.add("hidden");
+      chip?.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  window.openAddProfile = function () {
+    $("add-profile-modal")?.classList.remove("hidden");
+    $("ap-error")?.classList.add("hidden");
+    $("ap-username") && ($("ap-username").value = "");
+    $("ap-display-name") && ($("ap-display-name").value = "");
+    $("ap-client-id") && ($("ap-client-id").value = "");
+    $("ap-client-secret") && ($("ap-client-secret").value = "");
   };
-}
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-function esc(str) {
-  if (typeof str !== 'string') return '';
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
+  window.closeAddProfile = function () {
+    $("add-profile-modal")?.classList.add("hidden");
   };
-  return str.replace(/[&<>"']/g, m => map[m]);
-}
 
-function starColorClass(sr) {
-  if (sr < 2) return 'star-gray';
-  if (sr < 2.7) return 'star-blue';
-  if (sr < 4) return 'star-cyan';
-  if (sr < 5.3) return 'star-green';
-  if (sr < 6.3) return 'star-yellow';
-  if (sr < 7.7) return 'star-orange';
-  return 'star-red';
-}
+  window.submitAddProfile = function () {
+    const username = $("ap-username")?.value?.trim();
+    const displayName = $("ap-display-name")?.value?.trim();
+    const clientId = $("ap-client-id")?.value?.trim();
+    const clientSecret = $("ap-client-secret")?.value?.trim();
+    const error = $("ap-error");
+    const spinner = $("ap-spinner");
+    const btnText = $("ap-btn-text");
 
-function fmtLen(sec) {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
+    if (!username || !clientId || !clientSecret) {
+      if (error) { error.textContent = "Username, Client ID, and Client Secret are required."; error.classList.remove("hidden"); }
+      return;
+    }
 
-function toast(msg, type = 'info') {
-  let container = document.querySelector('.toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.className = 'toast-container';
-    document.body.appendChild(container);
-  }
+    if (spinner) spinner.classList.remove("hidden");
+    if (btnText) btnText.textContent = "Adding...";
 
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
-  toast.textContent = msg;
-  container.appendChild(toast);
-
-  setTimeout(() => {
-    toast.classList.add('show');
-  }, 10);
-
-  setTimeout(() => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
-}
-
-function renderTypeBadges(tags) {
-  return tags.map(tag => `<span class="type-badge">${esc(tag)}</span>`).join('');
-}
-
-function calcModifiedStats(bm, mods) {
-  let bpm = bm.bpm || 0;
-  let ar = bm.ar || 0;
-  let od = bm.accuracy || 0;
-
-  if (mods.includes('DT')) {
-    bpm *= 1.5;
-    ar = Math.min(ar * 1.4 + 0.6, 11);
-  }
-  if (mods.includes('HR')) {
-    ar = Math.min(ar * 1.4, 10);
-  }
-  if (mods.includes('EZ')) {
-    ar = ar / 2;
-  }
-
-  return {
-    bpm: Math.round(bpm),
-    ar: ar.toFixed(1),
-    od: od.toFixed(1)
+    fetch("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        display_name: displayName || username,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (spinner) spinner.classList.add("hidden");
+        if (btnText) btnText.textContent = "Add Profile";
+        if (data.error) {
+          if (error) { error.textContent = data.error; error.classList.remove("hidden"); }
+          return;
+        }
+        toast("Profile added!", "success");
+        $("add-profile-modal")?.classList.add("hidden");
+        loadProfilesList();
+      })
+      .catch((err) => {
+        if (spinner) spinner.classList.add("hidden");
+        if (btnText) btnText.textContent = "Add Profile";
+        if (error) { error.textContent = err.message; error.classList.remove("hidden"); }
+      });
   };
-}
 
-function exportRecs() {
-  const csv = currentRecs.map(rec => {
-    const bm = rec.beatmap || {};
-    return [
-      bm.id,
-      bm.title,
-      bm.artist,
-      bm.creator,
-      bm.difficulty_rating,
-      bm.ar,
-      bm.bpm,
-      rec.reason
-    ].join(',');
-  }).join('\n');
+  /* ─── Confirm Dialog ────────────────────────────────────────── */
 
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `recs-${new Date().toISOString().split('T')[0]}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+  function showConfirm(msg, onOk) {
+    const modal = $("confirm-modal");
+    const msgEl = $("confirm-modal-msg");
+    const okBtn = $("confirm-ok-btn");
+    const cancelBtn = $("confirm-cancel-btn");
+    if (!modal) { if (confirm(msg)) onOk(); return; }
+    if (msgEl) msgEl.textContent = msg;
+    modal.classList.remove("hidden");
+    const cleanup = () => modal.classList.add("hidden");
+    okBtn.onclick = () => { cleanup(); onOk(); };
+    cancelBtn.onclick = cleanup;
+  }
 
-function exportLiked() {
-  const csv = Array.from(likedBmsIds).join('\n');
-  const blob = new Blob([csv], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `liked-${new Date().toISOString().split('T')[0]}.txt`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+  /* ─── History ───────────────────────────────────────────────── */
 
-// Load global SR bounds from localStorage on page load
-document.addEventListener('DOMContentLoaded', () => {
-  const stored_min = localStorage.getItem('globalSrMin');
-  const stored_max = localStorage.getItem('globalSrMax');
-  if (stored_min !== null) globalSrMin = parseFloat(stored_min);
-  if (stored_max !== null) globalSrMax = parseFloat(stored_max);
-});
+  window.loadHistory = function () {
+    const list = $("history-list");
+    if (!list) return;
+    list.innerHTML = '<p style="font-size:.82rem;color:var(--text-muted)">Loading...</p>';
+    fetch("/api/history")
+      .then((r) => r.json())
+      .then((data) => {
+        const history = data.history || [];
+        if (history.length === 0) {
+          list.innerHTML = '<p style="font-size:.82rem;color:var(--text-muted)">No recommendation history yet.</p>';
+          return;
+        }
+        list.innerHTML = history
+          .map(
+            (h) => `
+          <div class="history-row">
+            <span class="history-date">${h.date || "?"}</span>
+            <span class="history-count">${(h.maps || []).length} maps</span>
+            ${h.mod_filter?.length ? `<span class="history-mods">+${h.mod_filter.join("")}</span>` : ""}
+          </div>
+        `
+          )
+          .join("");
+      })
+      .catch(() => {
+        list.innerHTML = '<p style="font-size:.82rem;color:var(--text-muted)">Failed to load history.</p>';
+      });
+  };
+
+  /* ─── SSE (Server-Sent Events) ──────────────────────────────── */
+
+  function startSSE() {
+    if (window.OAUTH_MODE || _sseSource) return;
+    _sseSource = new EventSource("/events");
+    _sseSource.addEventListener("new_top_play", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        showNewPlayBanner(data);
+      } catch (err) {
+        console.error("SSE parse error:", err);
+      }
+    });
+    _sseSource.addEventListener("open", () => {
+      const dot = $("live-dot");
+      if (dot) dot.classList.remove("hidden");
+    });
+    _sseSource.onerror = () => {
+      const dot = $("live-dot");
+      if (dot) dot.classList.add("hidden");
+    };
+  }
+
+  function showNewPlayBanner(data) {
+    const banner = $("new-play-banner");
+    const titleEl = $("new-play-title");
+    if (!banner) return;
+    if (titleEl) titleEl.textContent = data.title || "New top play detected!";
+    banner.classList.remove("hidden");
+
+    const viewBtn = $("new-play-view-btn");
+    if (viewBtn) {
+      viewBtn.onclick = () => {
+        banner.classList.add("hidden");
+        loadTopPlays();
+        switchTab("plays");
+      };
+    }
+
+    const closeBtn = $("new-play-close");
+    if (closeBtn) {
+      closeBtn.onclick = () => banner.classList.add("hidden");
+    }
+
+    // Auto-hide after 15s
+    setTimeout(() => banner.classList.add("hidden"), 15000);
+  }
+
+  /* ─── Refresh Buttons ───────────────────────────────────────── */
+
+  function setupRefreshButtons() {
+    $("refresh-plays-btn")?.addEventListener("click", loadTopPlays);
+    $("refresh-recs-btn")?.addEventListener("click", () => _loadRecommendations());
+  }
+
+  /* ─── User Info & Auth ──────────────────────────────────────── */
+
+  function loadMe() {
+    return fetch("/api/me")
+      .then((r) => r.json())
+      .then((data) => {
+        meData = data;
+        updateAuthUI(data);
+        return data;
+      })
+      .catch((err) => {
+        console.error("Failed to load /api/me:", err);
+      });
+  }
+
+  function updateAuthUI(data) {
+    if (data.oauth_mode) {
+      if (!data.logged_in) {
+        // Show login screen
+        $("oauth-login-screen")?.classList.remove("hidden");
+        return;
+      }
+      $("oauth-login-screen")?.classList.add("hidden");
+      // Show OAuth user chip
+      const chip = $("oauth-user-chip");
+      if (chip) {
+        chip.classList.remove("hidden");
+        $("oauth-username") && ($("oauth-username").textContent = data.username || "—");
+        $("oauth-pp") && ($("oauth-pp").textContent = data.pp ? `${Math.round(data.pp)}pp` : "—");
+        const avatar = $("oauth-avatar");
+        if (avatar && data.avatar_url) { avatar.src = data.avatar_url; avatar.style.display = ""; }
+      }
+      $("profile-switcher")?.classList.add("hidden");
+    } else {
+      // Local mode
+      $("oauth-login-screen")?.classList.add("hidden");
+      $("oauth-user-chip")?.classList.add("hidden");
+
+      if (!data.logged_in || !data.has_credentials) {
+        // Show setup overlay
+        $("setup-overlay")?.classList.remove("hidden");
+        return;
+      }
+      $("setup-overlay")?.classList.add("hidden");
+
+      // Show profile switcher
+      const switcher = $("profile-switcher");
+      if (switcher) {
+        switcher.classList.remove("hidden");
+        $("profile-chip-name") && ($("profile-chip-name").textContent = data.display_name || data.username || "—");
+        $("profile-chip-pp") && ($("profile-chip-pp").textContent = data.pp ? `${Math.round(data.pp)}pp` : "—");
+        const avatar = $("profile-avatar");
+        if (avatar && data.avatar_url) { avatar.src = data.avatar_url; avatar.style.display = ""; }
+      }
+    }
+
+    // Fetch detailed user info to update avatar/pp
+    loadUserInfo();
+  }
+
+  function loadUserInfo() {
+    fetch("/api/user-info")
+      .then((r) => r.json())
+      .then((info) => {
+        if (info.error) return;
+        // Update header chips with fresh data
+        if (meData?.oauth_mode) {
+          const avatar = $("oauth-avatar");
+          if (avatar && info.avatar_url) { avatar.src = info.avatar_url; avatar.style.display = ""; }
+          $("oauth-pp") && ($("oauth-pp").textContent = info.pp ? `${Math.round(info.pp)}pp` : "—");
+        } else {
+          const avatar = $("profile-avatar");
+          if (avatar && info.avatar_url) { avatar.src = info.avatar_url; avatar.style.display = ""; }
+          $("profile-chip-pp") && ($("profile-chip-pp").textContent = info.pp ? `${Math.round(info.pp)}pp` : "—");
+        }
+      })
+      .catch(() => {});
+  }
+
+  /* ─── Setup Overlay (First-time Local Mode) ─────────────────── */
+
+  function setupSetupOverlay() {
+    const btn = $("setup-btn");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      const username = $("setup-username")?.value?.trim();
+      const clientId = $("setup-client-id")?.value?.trim();
+      const clientSecret = $("setup-client-secret")?.value?.trim();
+      const error = $("setup-error");
+      const spinner = $("setup-spinner");
+      const btnText = $("setup-btn-text");
+
+      if (!username || !clientId || !clientSecret) {
+        if (error) { error.textContent = "All fields are required."; error.classList.remove("hidden"); }
+        return;
+      }
+
+      if (spinner) spinner.classList.remove("hidden");
+      if (btnText) btnText.textContent = "Connecting...";
+      if (error) error.classList.add("hidden");
+
+      // Test credentials first, then save profile
+      fetch("/api/test-credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, client_id: clientId, client_secret: clientSecret }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.ok) throw new Error(data.error || "Invalid credentials");
+          // Update the default profile
+          return fetch("/api/profiles")
+            .then((r) => r.json())
+            .then((pdata) => {
+              if (pdata.oauth_mode) return;
+              const profiles = pdata.profiles || [];
+              if (profiles.length > 0) {
+                return fetch(`/api/profiles/${profiles[0].id}`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    username,
+                    display_name: data.user?.username || username,
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                    avatar_url: data.user?.avatar_url || "",
+                    pp: data.user?.pp,
+                    global_rank: data.user?.global_rank,
+                  }),
+                });
+              }
+            });
+        })
+        .then(() => {
+          if (spinner) spinner.classList.add("hidden");
+          if (btnText) btnText.textContent = "Connect to osu!";
+          $("setup-overlay")?.classList.add("hidden");
+          toast("Connected to osu!", "success");
+          loadMe().then(() => {
+            loadTopPlays();
+            startSSE();
+          });
+        })
+        .catch((err) => {
+          if (spinner) spinner.classList.add("hidden");
+          if (btnText) btnText.textContent = "Connect to osu!";
+          if (error) { error.textContent = err.message; error.classList.remove("hidden"); }
+        });
+    });
+  }
+
+  /* ─── Fetch initial dismissed/liked IDs ─────────────────────── */
+
+  function loadDismissedAndLiked() {
+    Promise.all([
+      fetch("/api/dismissed").then((r) => r.json()),
+      fetch("/api/feedback").then((r) => r.json()),
+    ])
+      .then(([dismissed, feedback]) => {
+        dismissedIds = new Set(dismissed.dismissed || []);
+        likedIds = new Set(feedback.liked || []);
+      })
+      .catch(() => {});
+  }
+
+  /* ─── Init ──────────────────────────────────────────────────── */
+
+  function init() {
+    initPlayer();
+    setupTabs();
+    setupViewToggle();
+    setupRecModToggles();
+    setupCatTabs();
+    setupStatusFilter();
+    setupExplore();
+    setupModToggles();
+    setupRefreshButtons();
+    setupSetupOverlay();
+
+    loadMe().then((data) => {
+      if (!data) return;
+      if (data.oauth_mode && !data.logged_in) return;
+      if (!data.oauth_mode && !data.has_credentials) return;
+
+      loadDismissedAndLiked();
+      loadTopPlays();
+      startSSE();
+    });
+  }
+
+  // Boot
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

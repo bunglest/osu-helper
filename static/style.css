@@ -1169,6 +1169,8 @@ main {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   background: var(--bg5);
+  background-size: cover;
+  background-position: center;
 }
 
 .play-cover img {
@@ -1497,6 +1499,8 @@ main {
   aspect-ratio: 4 / 3;
   overflow: hidden;
   background: var(--bg5);
+  background-size: cover;
+  background-position: center;
 }
 
 .rec-cover img {
@@ -1683,12 +1687,17 @@ main {
   padding-top: 12px;
   border-top: 1px solid var(--border);
   margin-top: auto;
+  flex-wrap: wrap;
 }
 
 .rec-actions .btn {
   flex: 1;
   padding: 10px;
   font-size: 13px;
+}
+
+.rec-actions .rec-action-btn {
+  flex: 0 0 auto;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -3213,6 +3222,137 @@ body.player-active {
 .text-right {
   text-align: right;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DYNAMIC JS ELEMENT STYLES
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Play card action/preview buttons */
+.play-preview-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-fast);
+  z-index: 3;
+}
+.play-card:hover .play-preview-btn { opacity: 1; }
+.play-preview-btn:hover { background: var(--accent); border-color: var(--accent); transform: translate(-50%, -50%) scale(1.1); }
+
+.play-diff { color: var(--text-muted); font-weight: 400; font-size: 0.85em; }
+.play-artist { font-size: 0.82rem; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.play-types { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.play-pp { font-family: var(--font-mono); font-weight: 700; color: var(--accent); font-size: 14px; }
+.play-acc { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
+
+.play-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  text-decoration: none;
+}
+.play-action-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); border-color: var(--accent); }
+
+/* Rec card action/preview buttons */
+.rec-preview-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--transition-fast);
+  z-index: 3;
+}
+.rec-card:hover .rec-preview-btn { opacity: 1; }
+.rec-preview-btn:hover { background: var(--accent); border-color: var(--accent); transform: translate(-50%, -50%) scale(1.1); }
+
+.rec-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  text-decoration: none;
+}
+.rec-action-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); border-color: var(--accent); }
+.rec-like-btn.liked { color: var(--accent); border-color: var(--accent); background: rgba(255, 45, 120, 0.1); }
+.rec-unlike-btn { color: var(--red); }
+.rec-unlike-btn:hover { background: rgba(239, 68, 68, 0.15); border-color: var(--red); }
+
+.rec-types { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+.mod-pill { background: rgba(255, 45, 120, 0.15); color: var(--accent); font-weight: 600; }
+
+/* Taste breakdown detail list */
+.taste-detail-list { display: flex; flex-direction: column; gap: 10px; }
+.taste-detail-row { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; }
+.taste-detail-label { min-width: 100px; color: var(--text-dim); font-size: 0.82rem; }
+.taste-detail-bar-wrap { flex: 1; height: 8px; background: rgba(255, 255, 255, 0.06); border-radius: 4px; overflow: hidden; }
+.taste-detail-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--cyan)); border-radius: 4px; transition: width 0.4s ease; }
+.taste-detail-val { min-width: 42px; text-align: right; font-family: var(--font-mono); color: var(--text); font-size: 0.82rem; }
+
+/* Profile management rows */
+.profile-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.profile-row:last-child { border-bottom: none; }
+.profile-row.active { background: rgba(255, 45, 120, 0.04); }
+.profile-row-info { display: flex; flex-direction: column; gap: 2px; }
+.profile-row-info strong { font-size: 0.88rem; }
+.profile-row-sub { font-size: 0.78rem; color: var(--text-muted); }
+.profile-row-actions { display: flex; gap: 6px; align-items: center; }
+.badge-active { font-size: 0.72rem; padding: 2px 8px; background: rgba(255, 45, 120, 0.15); color: var(--accent); border-radius: 10px; font-weight: 600; }
+
+/* History rows */
+.history-row { display: flex; gap: 12px; align-items: center; padding: 6px 0; font-size: 0.82rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+.history-date { color: var(--text-muted); min-width: 90px; }
+.history-count { color: var(--text-dim); }
+.history-mods { font-family: var(--font-mono); color: var(--accent); font-size: 0.78rem; }
+
+/* Profile menu items */
+.profile-menu-item { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 8px 14px; background: none; border: none; color: var(--text-dim); font-size: 0.85rem; cursor: pointer; transition: var(--transition-fast); text-align: left; }
+.profile-menu-item:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+.profile-menu-item.active { color: var(--accent); font-weight: 600; }
+.profile-menu-pp { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); }
+
+/* Swipe history list */
+.swipe-history-list { max-height: 300px; overflow-y: auto; }
+
+/* Toast show animation */
+.toast.show { opacity: 1; }
 
 /* ─────────────────────────────────────────────────────────────────────────
    END OF STYLESHEET

@@ -2116,6 +2116,10 @@ def api_feedback_like():
         "bpm":      bm_obj.get("bpm") or bms_obj.get("bpm"),
         "creator":  (bms_obj.get("creator") or "").lower().strip(),
         "map_types": classify_map_type(bm_obj, bms_obj) if bm_obj else [],
+        "title":    bms_obj.get("title", ""),
+        "artist":   bms_obj.get("artist", ""),
+        "version":  bm_obj.get("version", ""),
+        "covers":   bms_obj.get("covers", {}),
     }
 
     data = load_feedback()
